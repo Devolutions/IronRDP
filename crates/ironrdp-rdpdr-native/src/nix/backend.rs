@@ -103,13 +103,14 @@ impl Default for NixRdpdrBackend {
 /// While no drive has a root of its own, every drive serves the shared directory, which is opened by path for each request.
 /// From the first such root on, every root is resolved once and holds the directory it names open, the shared directory included.
 /// Roots that name the same directory each hold it open, through their own path.
-/// A root beyond the bound on roots held open, which [`Self::record_root`] sets, is resolved too, but holds nothing open.
+/// A root beyond the bound on roots held open, which [`Self::record_root`] sets, is resolved too, but holds nothing open, like a root whose directory cannot be read.
 ///
 /// UNTESTED: a root that holds its directory open keeps one descriptor between requests, the one in its `directory`.
-/// A root that did not resolve keeps none, like the shared directory while no drive has a root of its own, and neither does a root beyond the bound on roots held open, whose walk closes its descriptors before the root is stored.
+/// A root that did not resolve keeps none, like the shared directory while no drive has a root of its own.
+/// Neither does a root whose directory could not be opened to be read or one beyond the bound on roots held open, whose walks close their descriptors before the root is stored.
 /// `max_open_files` counts one open file for each root that holds its directory open, so any other descriptor kept for a root would come out of the quarter it leaves to the rest of the process.
 /// The tests count the places taken under the limit, not descriptors, which cannot be counted reliably in the one process they share.
-/// After changing how roots are opened or held, check that each root that holds its directory open keeps exactly the descriptor in its `directory`, and that a root beyond the bound keeps none.
+/// After changing how roots are opened or held, check that each root that holds its directory open keeps exactly the descriptor in its `directory`, and that a root that cannot be read or lies beyond the bound keeps none.
 #[derive(Debug)]
 struct DriveRoots {
     /// The path of the shared directory, which is the root of every device without a root of its own, or empty when there is none.
@@ -131,7 +132,7 @@ struct ConfiguredRoot {
     ///
     /// A root that does not hold its directory open has one too, because the paths of the other roots are checked against it all the same.
     identity: RootIdentity,
-    /// The directory the path named, opened through that path, or `None` when the walk failed or the root lies beyond the bound on roots held open.
+    /// The directory the path named, opened through that path, or `None` when the walk failed, the directory could not be opened to be read, or the root lies beyond the bound on roots held open.
     ///
     /// A refused root keeps its directory open too, because replacing the root that refuses it makes it usable again without resolving its path again.
     directory: Option<Root>,
@@ -226,6 +227,8 @@ impl DriveRoots {
     ///
     /// The outcome is given rather than taken here, so a test can give one that no path produces on demand.
     /// A walk that failed leaves the root unusable, and its directory undetermined unless the failure shows that `path` names none, as [`names_no_directory`] tells.
+    /// A walk that reached a directory it could not open to be read leaves the root unusable too, but its directory known.
+    /// A server may have been served that directory while it could be read, so the paths of the other roots are checked against it as against any other.
     /// A root that resolved holds the directory `path` names open.
     /// The roots hold at most half of `max_open_files` directories open, so at least half the limit is left to open files however many roots are given.
     /// A root beyond that is recorded all the same, but holds nothing open and is unusable.
@@ -243,7 +246,8 @@ impl DriveRoots {
         let max_held_roots = max_open_files / 2;
         let (identity, directory, deciding_directories) = match walk {
             Ok(ResolvedRoot {
-                root,
+                identity,
+                root: Ok(root),
                 deciding_directories,
             }) => {
                 let is_held = self.held_count() < max_held_roots;
@@ -257,10 +261,24 @@ impl DriveRoots {
                 }
                 // A root that is not held is dropped here, which closes the last descriptor of its walk.
                 (
-                    RootIdentity::Known(root.identity()),
+                    RootIdentity::Known(identity),
                     is_held.then_some(root),
                     deciding_directories,
                 )
+            }
+            // The walk reached the directory, so it is known although nothing can be served from it.
+            Ok(ResolvedRoot {
+                identity,
+                root: Err(error),
+                deciding_directories,
+            }) => {
+                warn!(
+                    %error,
+                    device_id,
+                    root = path,
+                    "Failed to open the directory of a drive root to read it, so nothing is served from it"
+                );
+                (RootIdentity::Known(identity), None, deciding_directories)
             }
             Err(error) if names_no_directory(error) => {
                 warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
@@ -2697,6 +2715,53 @@ mod tests {
         let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
 
         assert_eq!(through_the_linked_root, NtStatus::SUCCESS);
+    }
+
+    /// A walk that reached its directory but could not open it to be read leaves the root unusable and its directory known.
+    /// A root reached through a link below that directory is therefore refused, and one reached through a link outside every root is served, in whichever order the roots are given.
+    // oracle: mutant the directory of a root that could not be opened to be read forgotten, or counted as undetermined
+    #[rstest]
+    #[case::the_unreadable_root_first([1, 2, 3])]
+    #[case::the_unreadable_root_last([2, 3, 1])]
+    fn a_root_reached_through_a_link_is_checked_against_the_directory_of_a_root_that_cannot_be_read(
+        #[case] order: [u32; 3],
+    ) {
+        // The devices given the root that cannot be read, a root reached through a link below it, and one reached through a link beside it.
+        let (unreadable, below, beside) = (1, 2, 3);
+        let roots = TwoRoots::new();
+        let (outside, other) = (&roots.second, roots.sandbox.join("other"));
+        std::fs::create_dir(&other).expect("create directory");
+        std::os::unix::fs::symlink(outside, roots.first.join("link")).expect("link directory");
+        std::os::unix::fs::symlink(&other, roots.sandbox.join("alias")).expect("link directory");
+        let mut backend = NixRdpdrBackend::default();
+        for device_id in order {
+            backend = if device_id == unreadable {
+                let path = utf8(&roots.first);
+                let walk = Root::resolve(&path).expect("resolve root");
+                let walk = ResolvedRoot {
+                    root: Err(Errno::EACCES),
+                    ..walk
+                };
+                backend
+                    .roots
+                    .record_root(backend.max_open_files, Some(unreadable), &path, Ok(walk));
+                backend
+            } else if device_id == below {
+                backend.with_drive_root(below, utf8(&roots.first.join("link")))
+            } else {
+                backend.with_drive_root(beside, utf8(&roots.sandbox.join("alias")))
+            };
+        }
+
+        let through_the_unreadable_root = create_file_in_the_root(&mut backend, unreadable);
+        let through_the_root_below = create_file_in_the_root(&mut backend, below);
+        let through_the_root_beside = create_file_in_the_root(&mut backend, beside);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_unreadable_root, NtStatus::UNSUCCESSFUL);
+        assert_eq!(through_the_root_below, NtStatus::UNSUCCESSFUL);
+        assert_eq!(std::fs::read_dir(outside).expect("list directory").count(), 0);
+        assert_eq!(through_the_root_beside, NtStatus::SUCCESS);
     }
 
     /// However many roots are given, they leave half the places under the limit to open files.

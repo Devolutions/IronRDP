@@ -71,10 +71,15 @@ pub(crate) struct Root {
     identity: FileIdentity,
 }
 
-/// A root resolved from the path it was configured with.
+/// The directory that the path a root was configured with leads to.
 #[derive(Debug)]
 pub(crate) struct ResolvedRoot {
-    pub(crate) root: Root,
+    /// The directory reached, as the descriptor the walk reached it with identifies it.
+    pub(crate) identity: FileIdentity,
+    /// The directory opened to be read, or the error that kept it from being opened so.
+    ///
+    /// A directory needs only to be searched to be reached, so one that cannot be read is known all the same.
+    pub(crate) root: nix::Result<Root>,
     /// The directory in which each symbolic link was followed or each `..` step taken on the way to the root, and every directory above it up to `/`.
     ///
     /// Whoever can rename entries in one of these directories can change which directory the path names.
@@ -98,6 +103,7 @@ impl Root {
     /// A relative target continues from that directory, an absolute one starts again at `/`, and a `..` in a target leads to the parent of the directory reached, as when the kernel resolves the path.
     /// At most `MAX_LINKS` links are followed and `MAX_COMPONENTS` components walked, so a tree built for it cannot make the walk run long.
     /// No failure is retried another way, and [`names_no_directory`] tells whether one shows that the path names no directory.
+    /// A directory that is reached but cannot be opened to be read is no failure of the walk: it is returned with the error in place of the root, so the other roots can still be checked against it.
     ///
     /// A path that only descends from a directory ends at or below it, whatever the entries of that directory and of those below it are.
     /// A link read in a directory, or a step back up from it, makes the end of the path depend on those entries, and it can then lie anywhere.
@@ -188,19 +194,13 @@ impl Root {
             }
         }
 
-        // The directory reached was opened to search it, and a root is read as well.
-        let directory = nix::fcntl::openat(
-            directory.as_fd(),
-            ".",
-            DIRECTORY_FLAGS | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )?;
-        let identity = FileIdentity::of(&fstat(directory.as_fd())?);
-        if chain.last() != Some(&identity) {
+        // `chain` is never empty, so the walk always has the directory it reached to report.
+        let Some(&identity) = chain.last() else {
             return Err(Errno::ESTALE);
-        }
+        };
         return Ok(ResolvedRoot {
-            root: Self { directory, identity },
+            identity,
+            root: open_to_read(directory.as_fd(), identity),
             deciding_directories,
         });
 
@@ -208,6 +208,20 @@ impl Root {
             let directory = nix::fcntl::open("/", WALK_FLAGS, Mode::empty())?;
             let identity = FileIdentity::of(&fstat(directory.as_fd())?);
             Ok((directory, identity))
+        }
+
+        /// Opens `reached`, the directory the walk ended at, which it opened only to search, to be read as a root is.
+        fn open_to_read(reached: BorrowedFd<'_>, identity: FileIdentity) -> nix::Result<Root> {
+            let directory = nix::fcntl::openat(
+                reached,
+                ".",
+                DIRECTORY_FLAGS | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )?;
+            if FileIdentity::of(&fstat(directory.as_fd())?) != identity {
+                return Err(Errno::ESTALE);
+            }
+            Ok(Root { directory, identity })
         }
     }
 
@@ -249,7 +263,7 @@ impl Root {
 
 /// Whether `error`, with which [`Root::resolve`] failed, shows that the path names no directory a drive could serve.
 ///
-/// The errors listed are those of a path that is missing, is not a directory, loops or exceeds the bounds of the walk, is malformed, or may not be searched or read.
+/// The errors listed are those of a path that is missing, is not a directory, loops or exceeds the bounds of the walk, is malformed, or may not be searched.
 /// A server cannot bring one about for a root that lies in no other root of its backend, because it can change nothing on the path of such a root.
 /// For a root that lies in another root it can, but whatever it changed through either then lies in or below the directory of the enclosing root, which the other roots are checked against.
 /// Either way, no directory that a server was served goes unchecked because the path now names none.

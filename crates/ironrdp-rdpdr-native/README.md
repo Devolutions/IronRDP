@@ -48,6 +48,7 @@ A root is unusable when its path:
 
 - is relative or empty, or holds a `.` or `..` component;
 - names no directory, or takes more than 40 symbolic links or 1024 components to resolve;
+- names a directory that the process may search but not read;
 - follows a symbolic link in or below the directory of any root of the same backend, its own included;
 - takes a `..` step, from the target of a symbolic link, in or below the directory of any root of the same backend, its own included;
 - cannot be resolved for a reason that leaves the directory it names undetermined, for example when the process has run out of descriptors;
@@ -59,7 +60,8 @@ A path that only descends from there ends at or below that directory, whatever t
 A link read there, or a step back up from there, makes the end of the path depend on those entries, so it could name any directory the next time it is resolved.
 Symbolic links that lie outside every root are followed, and so are the `..` components of their targets that are taken outside every root.
 Whether a link lies outside every root can be told only while the directory of every root is known.
-A root that names no directory does not affect the other roots: that covers a path that is malformed, exceeds the bounds above, or leads to nothing the process may search and read.
+A root that names no directory does not affect the other roots: that covers a path that is malformed, exceeds the bounds above, or leads to nothing the process may search.
+A root whose directory may be searched but not read holds nothing open, and the other roots are still checked against that directory, because a server may have been served it while it could be read.
 A root that fails to resolve for any other reason, for example because the process has run out of descriptors, may name a directory that a server was served before, and a link anywhere may then lie in or below it.
 While such a root is configured, every root reached through a symbolic link or a `..` step is unusable, and the roots whose paths only descend are served.
 A drive with an unusable root is still configured and announced, but is served nothing: a create through it fails as it does when the shared directory cannot be opened.
@@ -101,6 +103,7 @@ These hold by construction and are tested:
 - A root is unusable when the walk that resolved it, one component at a time from `/`, followed a symbolic link or took a `..` step in the directory of a root of the backend or in a directory it reached through one.
 - A root is unusable when that walk followed a symbolic link or took a `..` step anywhere, while the walk of another root of the backend failed without showing that its path names no directory.
   The tests give the backend that failure, because they cannot make the process run out of descriptors.
+- A root whose directory may be searched but not read is unusable, and the other roots are checked against that directory.
 - A drive with an unusable root is served nothing, and the other drives are served.
 - The roots hold at most half the limit on open files, so at least half of it is left to open files.
 

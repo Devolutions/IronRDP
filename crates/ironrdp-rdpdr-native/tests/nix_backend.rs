@@ -2266,6 +2266,36 @@ fn a_root_whose_path_a_server_led_through_a_link_serves_nothing() {
     assert!(roots.outer.join("new.txt").exists());
 }
 
+/// A root whose directory may be searched but not read is unusable, yet the roots below it are still checked against that directory.
+/// Here a server renamed a link into the path of the inner root before the outer root lost its read permission, and a create through the inner drive must not land where the link leads.
+/// Run as a user that no permission stops, the test proves nothing.
+// oracle: mutant the directory of a root that cannot be read left out of those a followed link is checked against
+#[test]
+fn a_root_whose_path_a_server_led_through_a_link_serves_nothing_below_a_root_that_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let roots = SwappedRoot::new();
+    let factory = roots.factory();
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    roots.swap_through_the_outer_drive(nix_backend(backend.as_mut()));
+    drop(backend);
+    let set_mode = |mode| {
+        std::fs::set_permissions(&roots.outer, std::fs::Permissions::from_mode(mode)).expect("set permissions");
+    };
+
+    set_mode(0o300);
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    // The fixture lists the directory to remove it.
+    set_mode(0o700);
+    let through_the_inner_drive = create_with(
+        nix_backend(backend.as_mut()),
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(response_status(&through_the_inner_drive), NOTHING_SERVED);
+    assert_eq!(names_in(&roots.outside), ["outside.txt"]);
+}
+
 /// Pins a documented limitation: roots are resolved again for each backend, so one built after a server renamed another directory to the path of the inner root serves that directory through the inner drive.
 /// That directory lies inside the outer root, where the outer drive reaches it as well.
 // oracle: mutant a later backend refused a root whose path came to name another directory inside the enclosing root, or resolved it outside that root
@@ -2550,7 +2580,7 @@ fn a_root_given_through_a_link_outside_every_root_is_served_beside_a_root_that_n
     assert_eq!(names_in(&fixture.share), ["new.txt"]);
 }
 
-/// A root that may not be read names no directory a drive could serve, so it too leaves a root given through a link outside every root served.
+/// A root that may not be read is unusable, but its directory is known, so a root given through a link outside every root is served beside it.
 /// Run as a user that no permission stops, the test proves nothing.
 // oracle: mutant a root that may not be read counted as a directory that could not be determined
 #[test]
