@@ -102,7 +102,7 @@ These hold by construction and are tested:
 - A drive with its own root serves the directory the root named when the backend was configured, for the lifetime of the backend.
 - A root is unusable when the walk that resolved it, one component at a time from `/`, followed a symbolic link or took a `..` step in the directory of a root of the backend or in a directory it reached through one.
 - A root is unusable when that walk followed a symbolic link or took a `..` step anywhere, while the walk of another root of the backend failed without showing that its path names no directory.
-  The tests give the backend that failure, because they cannot make the process run out of descriptors.
+  The tests give the backend that failure, and also build a backend while the process has run out of descriptors.
 - A root whose directory may be searched but not read is unusable, and the other roots are checked against that directory.
 - A drive with an unusable root is served nothing, and the other drives are served.
 - The roots hold at most half the limit on open files, so at least half of it is left to open files.

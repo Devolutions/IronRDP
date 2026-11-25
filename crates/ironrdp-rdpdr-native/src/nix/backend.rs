@@ -326,11 +326,7 @@ impl DriveRoots {
     ///
     /// Every root is judged again against all of them, refused ones included, so the outcome does not depend on the order the roots were given in.
     ///
-    /// UNTESTED: a walk that fails because the process has run out of descriptors makes every root reached through a link or a `..` step unusable.
-    /// A root reached through a link that a server placed below the directory of the root whose walk failed would otherwise be served a directory outside every root.
-    /// The tests share one process, whose descriptors they cannot exhaust, so they give `record_root` the failure and never run the walk into it.
-    /// After changing the walk, how its outcome is recorded or this check, check by hand with roots `outer/a/b` and `outer` and a link `outer/d/b` to a directory outside both.
-    /// Rename `\a` away and `\d` to `\a` through the drive of `outer`, build a second backend while the process has two descriptors left, and check that a create through the drive of `outer/a/b` fails.
+    /// The refusal while a directory is undetermined is tested with failures given to `record_root`, and in `tests/nix_root_descriptors.rs` with walks that run out of descriptors, in a process that test has to itself.
     ///
     /// UNTESTED: a link or a `..` step counts as lying below a root only when the directories walked from `/` to it include the directory of that root.
     /// A bind mount, or on macOS a firmlink such as `/Users` for `/System/Volumes/Data/Users`, shows a directory inside a root at another path.
