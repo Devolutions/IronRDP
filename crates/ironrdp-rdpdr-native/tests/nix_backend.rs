@@ -2058,6 +2058,7 @@ fn the_printer_avoids_the_id_of_a_drive_with_its_own_root() {
 
     assert_ne!(beside_a_rooted_drive, free_id);
     assert_eq!(beside_a_rooted_drive, beside_a_shared_drive);
+    return;
 
     fn printer_id(factory: &NixRdpdrBackendFactory) -> u32 {
         let product = factory.build_rdpdr_backend().expect("valid configuration");
@@ -2106,6 +2107,7 @@ fn drives_share_the_waiting_lock_limit() {
     assert_eq!(through_one_drive.1, NtStatus::INSUFFICIENT_RESOURCES);
     assert!(0 < through_one_drive.0);
     assert_eq!(through_two_drives, through_one_drive);
+    return;
 
     /// Locks a file of each device, then queues lock requests behind those locks, one device after the other, until one is refused.
     /// Returns the number of requests queued and the status of the refusal.
@@ -2757,6 +2759,7 @@ fn a_drive_keeps_its_directory_when_its_path_comes_to_name_another(#[case] repla
     assert_eq!(after_reset, b"kept");
     assert_eq!(names_in(&moved), ["after.txt", "before.txt", "kept.txt"]);
     assert_eq!(names_in(&roots.second), ["kept.txt"]);
+    return;
 
     /// Reads `kept.txt` through `SECOND` and creates `path` through it.
     fn read_kept_and_create(backend: &mut NixRdpdrBackend, path: &str) -> Vec<u8> {
@@ -2823,6 +2826,7 @@ fn a_waiting_lock_is_granted_when_a_drive_nested_with_the_waiting_one_releases_t
 
     assert!(waited.is_empty());
     assert_eq!(completions(&released), [(2, NtStatus::SUCCESS), (3, NtStatus::SUCCESS)]);
+    return;
 
     /// A request on the first ten bytes of `file_id`, answered with `completion_id`.
     fn lock_request_with(
