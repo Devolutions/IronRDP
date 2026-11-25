@@ -663,6 +663,44 @@ fn rename_onto_another_link_of_the_same_file_removes_the_source() {
     );
 }
 
+/// Renaming a file to the name its link already has changes nothing, however many links it has.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_onto_its_own_name_keeps_a_hard_linked_file() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("a.txt"), fixture.share.join("b.txt")).expect("link file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\a.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\a.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(fixture.share.join("a.txt").exists());
+    assert!(fixture.share.join("b.txt").exists());
+}
+
+/// A link of the same name in another directory is another link, so the source goes.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_onto_a_link_of_the_same_name_in_another_directory_removes_the_source() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    std::fs::write(fixture.share.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("a.txt"), fixture.share.join("dir/a.txt")).expect("link file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\a.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\dir\a.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!fixture.share.join("a.txt").exists());
+    assert_eq!(
+        std::fs::read(fixture.share.join("dir/a.txt")).expect("read dir/a.txt"),
+        b"linked"
+    );
+}
+
 /// A rename moves only the file the handle holds, never a file that took its name since it was opened.
 /// On a case-sensitive filesystem, a link whose name differs from the source only in case is another link, so the source goes.
 // oracle: spec MS-FSA §2.1.5.15.12
