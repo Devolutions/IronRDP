@@ -40,7 +40,7 @@ Once a drive has a root of its own, the shared directory is resolved and held th
 A backend whose drives all serve the shared directory opens it by path for each request, and does not check it.
 Roots that name the same directory each hold it open through their own path, so a drive is bound by what the mount on the path of its own root allows, such as a read-only bind mount.
 Each root that holds its directory open counts as one open file against the limit on open files, and keeps its filesystem busy while the backend lives.
-A root that is unusable because its path followed a symbolic link, as described below, still holds its directory open and counts.
+A root that is unusable because of a symbolic link or a `..` step on its path, as described below, still holds its directory open and counts.
 The roots hold at most half of that limit, so at least half is left to open files: with a soft descriptor limit of 256, at most 32 roots hold their directory open.
 
 A root is unusable when its path:
@@ -48,10 +48,13 @@ A root is unusable when its path:
 - is relative or empty, or holds a `.` or `..` component;
 - names no directory, or takes more than 40 symbolic links or 1024 components to resolve;
 - follows a symbolic link in or below the directory of any root of the same backend, its own included;
+- takes a `..` step, from the target of a symbolic link, in or below the directory of any root of the same backend, its own included;
 - is given when the roots given before it already hold half the limit on open files.
 
-A server can replace a link in a directory it is served, so a path through one could name another directory the next time it is resolved.
-Symbolic links that lie outside every root are followed.
+In a directory it is served, and below it, a server decides what every entry is.
+A path that only descends from there ends at or below that directory, whatever the server does.
+A link read there, or a step back up from there, makes the end of the path depend on those entries, so it could name any directory the next time it is resolved.
+Symbolic links that lie outside every root are followed, and so are the `..` components of their targets that are taken outside every root.
 A drive with an unusable root is still configured and announced, but is served nothing: a create through it fails as it does when the shared directory cannot be opened.
 The other drives are served, and a warning is logged when a root becomes unusable.
 Roots are checked against each other in whichever order they are given.
@@ -87,14 +90,14 @@ Between drives that serve different directories, these limitations are known:
 These hold by construction and are tested:
 
 - A drive with its own root serves the directory the root named when the backend was configured, for the lifetime of the backend.
-- A root is unusable when the walk that resolved it, one component at a time from `/`, followed a symbolic link in the directory of a root of the backend or in a directory it reached through one.
+- A root is unusable when the walk that resolved it, one component at a time from `/`, followed a symbolic link or took a `..` step in the directory of a root of the backend or in a directory it reached through one.
 - A drive with an unusable root is served nothing, and the other drives are served.
 - The roots hold at most half the limit on open files, so at least half of it is left to open files.
 
 These are assumed, and nothing checks them:
 
 - Local processes are trusted, because they can change what any path names.
-- No bind mount, and on macOS no firmlink such as `/Users` for `/System/Volumes/Data/Users`, shows a directory inside a root at another path, where the walk does not reach a link through that root.
+- No bind mount, and on macOS no firmlink such as `/Users` for `/System/Volumes/Data/Users`, shows a directory inside a root at another path, where the walk does not reach a link or a `..` step through that root.
 - No other backend with another configuration lets a server write to a directory that a root path leads through.
   A root path is trusted as local configuration wherever it lies outside the roots of its own backend.
 - No server of another connection changes the directories on a root path while the root is resolved.

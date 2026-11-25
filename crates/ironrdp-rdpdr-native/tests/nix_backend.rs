@@ -2372,6 +2372,75 @@ fn a_root_inside_another_may_be_given_through_a_link_outside_every_root(
     assert_eq!(names_in(&nested.inner), ["new.txt"]);
 }
 
+/// A root whose path enters the directory it names, descends, and comes back up through `..` is served nothing, from the first backend on.
+/// A server that was served the directory could rename a link into the descent, so the `..` components would end somewhere else in a later backend: here in `outside`.
+// oracle: mutant a `..` taken below a configured root left out of what makes a root unusable
+#[test]
+fn a_root_whose_path_comes_back_up_to_its_own_directory_serves_nothing() {
+    let fixture = Fixture::new();
+    let deeper = fixture.sandbox.join("outside").join("deep").join("deeper");
+    for directory in [&fixture.share.join("p").join("sub"), &fixture.share.join("q"), &deeper] {
+        std::fs::create_dir_all(directory).expect("create directory");
+    }
+    link(&deeper, &fixture.share.join("q").join("sub"));
+    let alias = fixture.sandbox.join("alias");
+    link(Path::new(&format!("{}/p/sub/../..", utf8(&fixture.share))), &alias);
+    let factory = NixRdpdrBackendFactory::default().with_drive_root(FIRST, "alias".to_owned(), utf8(&alias));
+    let before = entries_below(&fixture.sandbox);
+
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    let renames = [(r"\p", r"\p_old"), (r"\q", r"\p")]
+        .map(|(from, to)| try_rename_on(nix_backend(backend.as_mut()), FIRST, from, to));
+    drop(backend);
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    let created = create_with(
+        nix_backend(backend.as_mut()),
+        create_request_on(FIRST, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(renames, [NOTHING_SERVED; 2]);
+    assert_eq!(response_status(&created), NOTHING_SERVED);
+    assert_eq!(entries_below(&fixture.sandbox), before);
+}
+
+/// Two roots whose paths each enter the directory of the other and leave it through `..` are both served nothing, in whichever order the roots are given.
+/// Each case returns the target of the link that is the root of `FIRST`, which names the first directory through the second, and of the link that is the root of `SECOND`, the other way round.
+// oracle: mutant a `..` taken in or below the directory of another root left out of what makes a root unusable
+#[rstest]
+#[case::directly_in_the_other_root(|roots: &TwoRoots| {
+    [format!("{}/../share", utf8(&roots.second)), format!("{}/../second", utf8(&roots.first))]
+})]
+#[case::below_the_other_root(|roots: &TwoRoots| {
+    [format!("{}/sub/../../share", utf8(&roots.second)), format!("{}/sub/../../second", utf8(&roots.first))]
+})]
+fn roots_whose_paths_leave_the_directory_of_each_other_by_a_parent_component_serve_nothing(
+    #[case] targets: fn(&TwoRoots) -> [String; 2],
+    #[values([FIRST, SECOND], [SECOND, FIRST])] order: [u32; 2],
+) {
+    let roots = TwoRoots::new();
+    let sandbox = roots.second.parent().expect("a sandbox");
+    let aliases = [sandbox.join("alias-first"), sandbox.join("alias-second")];
+    for directory in [&roots.first, &roots.second] {
+        std::fs::create_dir(directory.join("sub")).expect("create directory");
+    }
+    for (target, alias) in targets(&roots).iter().zip(&aliases) {
+        link(Path::new(target), alias);
+    }
+    let mut backend = backend_with_roots_in_order(&aliases, order);
+    let before = entries_below(sandbox);
+
+    let through_each_drive = [FIRST, SECOND].map(|device_id| {
+        let response = create_with(
+            &mut backend,
+            create_request_on(device_id, r"\new.txt", CreateDisposition::FILE_CREATE),
+        );
+        response_status(&response)
+    });
+
+    assert_eq!(through_each_drive, [NOTHING_SERVED; 2]);
+    assert_eq!(entries_below(sandbox), before);
+}
+
 /// A root whose path does not resolve to a directory is served nothing, not even the shared directory, which the other drive is still served.
 /// Opening the root creates nothing, so a root that was served would only show in the status.
 // oracle: mutant a root path that must not resolve left to the kernel, which resolves it, or a drive with such a root served the shared directory
@@ -3520,6 +3589,18 @@ fn rename_on(backend: &mut NixRdpdrBackend, device_id: u32, from: &str, to: &str
     let response = set_information_on(backend, device_id, file_id, rename_to(to, false));
     assert_eq!(response_status(&response), NtStatus::SUCCESS, "rename {from} to {to}");
     close_on(backend, device_id, file_id);
+}
+
+/// Asks to rename `from` to `to` through `device_id` as [`rename_on`] does, whatever the answers, and returns the status of the open the rename needs.
+fn try_rename_on(backend: &mut NixRdpdrBackend, device_id: u32, from: &str, to: &str) -> NtStatus {
+    let opened = create_with(
+        backend,
+        create_request_on(device_id, from, CreateDisposition::FILE_OPEN),
+    );
+    let file_id = response_file_id(&opened);
+    let _ = set_information_on(backend, device_id, file_id, rename_to(to, false));
+    let _ = close_on(backend, device_id, file_id);
+    response_status(&opened)
 }
 
 /// Makes `link` a symbolic link to `target`.

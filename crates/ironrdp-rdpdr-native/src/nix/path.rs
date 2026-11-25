@@ -4,8 +4,8 @@
 //! Each path is split into validated components and opened one component at a time relative to a directory descriptor.
 //! Symbolic links and mount points are refused, so no spelling, link or mount inside the root resolves outside it.
 //!
-//! The path of a root is local configuration, so `Root::resolve` follows the symbolic links in it, but reports the directories it followed them in.
-//! A link in or below a directory that a drive serves is one a server can replace, so the backend refuses a root reached through one.
+//! The path of a root is local configuration, so `Root::resolve` follows the symbolic links in it, but reports the directories in which it followed a link or stepped back up through `..`.
+//! A server decides what every entry in or below a directory it is served is, so the backend refuses a root whose path did either there.
 //!
 //! UNTESTED: every filesystem call on a server-supplied path works on a descriptor from `Root::open_at`,
 //! `RelativePath::open_parent` or `RelativePath::open_directory`, never on a joined path string.
@@ -75,10 +75,10 @@ pub(crate) struct Root {
 #[derive(Debug)]
 pub(crate) struct ResolvedRoot {
     pub(crate) root: Root,
-    /// The directory holding each symbolic link followed on the way to the root, and every directory above it up to `/`.
+    /// The directory in which each symbolic link was followed or each `..` step taken on the way to the root, and every directory above it up to `/`.
     ///
     /// Whoever can rename entries in one of these directories can change which directory the path names.
-    pub(crate) link_directories: HashSet<FileIdentity>,
+    pub(crate) deciding_directories: HashSet<FileIdentity>,
 }
 
 impl Root {
@@ -91,13 +91,17 @@ impl Root {
         Ok(Self { directory, identity })
     }
 
-    /// Resolves `path` to the directory it names and opens it, reporting the directories in which it followed symbolic links.
+    /// Resolves `path` to the directory it names and opens it, reporting the directories in which it followed a symbolic link or took a `..` step.
     ///
     /// `path` must be absolute and hold no `.` or `..` component; empty components are skipped.
     /// It is walked one component at a time from `/`, and a symbolic link is read and followed here rather than by the kernel, so the directory holding it is known.
     /// A relative target continues from that directory, an absolute one starts again at `/`, and a `..` in a target leads to the parent of the directory reached, as when the kernel resolves the path.
     /// At most `MAX_LINKS` links are followed and `MAX_COMPONENTS` components walked, so a tree built for it cannot make the walk run long.
     /// Any failure makes the path name no directory: none is retried another way.
+    ///
+    /// A path that only descends from a directory ends at or below it, whatever the entries of that directory and of those below it are.
+    /// A link read in a directory, or a step back up from it, makes the end of the path depend on those entries, and it can then lie anywhere.
+    /// Both are therefore reported, with the directory they happen in and every directory above it.
     ///
     /// UNTESTED: no component is entered or followed on the strength of an earlier look at it.
     /// `fstatat` only chooses between opening a directory and reading a link, and each of those fails on anything else: the open takes `O_NOFOLLOW | O_DIRECTORY`, and `readlinkat` reads nothing but a link.
@@ -123,7 +127,7 @@ impl Root {
         let (mut directory, identity) = open_filesystem_root()?;
         // INVARIANT: `chain` holds the directories from `/` down to `directory`, so it is never empty and ends with the identity of `directory`.
         let mut chain = vec![identity];
-        let mut link_directories = HashSet::new();
+        let mut deciding_directories = HashSet::new();
         let mut links = 0_usize;
         let mut walked = 0_usize;
         while let Some(component) = pending.pop_front() {
@@ -132,12 +136,14 @@ impl Root {
                 return Err(Errno::ENAMETOOLONG);
             }
             if component == b".." {
+                // The step is reported for the directory it is taken in, which `chain` is about to lose.
+                deciding_directories.extend(chain.iter().copied());
                 let parent = nix::fcntl::openat(directory.as_fd(), "..", WALK_FLAGS, Mode::empty())?;
                 if 1 < chain.len() {
                     chain.pop();
                 }
                 // UNTESTED: a parent that is not the directory walked through fails the walk, as the parent of a directory moved since it was entered.
-                // `chain` would otherwise name directories the walk is no longer below, and a link followed next would be reported in the wrong ones.
+                // `chain` would otherwise name directories the walk is no longer below, and a link followed or a `..` step taken next would be reported in the wrong ones.
                 // The tests cannot move a directory during the walk, so after changing this, check that `chain` is compared with the parent actually opened.
                 if chain.last() != Some(&FileIdentity::of(&fstat(parent.as_fd())?)) {
                     return Err(Errno::ESTALE);
@@ -158,7 +164,7 @@ impl Root {
                         return Err(Errno::ELOOP);
                     }
                     let target = readlinkat(directory.as_fd(), name)?;
-                    link_directories.extend(chain.iter().copied());
+                    deciding_directories.extend(chain.iter().copied());
                     let target = target.as_bytes();
                     if target.is_empty() {
                         return Err(Errno::ENOENT);
@@ -195,7 +201,7 @@ impl Root {
         }
         return Ok(ResolvedRoot {
             root: Self { directory, identity },
-            link_directories,
+            deciding_directories,
         });
 
         fn open_filesystem_root() -> nix::Result<(OwnedFd, FileIdentity)> {

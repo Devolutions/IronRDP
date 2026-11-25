@@ -125,9 +125,9 @@ struct ConfiguredRoot {
     ///
     /// A refused root keeps its directory open too, because replacing the root that refuses it makes it usable again without resolving its path again.
     directory: Option<Root>,
-    /// The directories whose entries decide what the path names, because a symbolic link was followed in or below them.
-    link_directories: HashSet<FileIdentity>,
-    /// Whether one of `link_directories` is the directory of a configured root, so a server could have changed what the path names.
+    /// The directories whose entries decide what the path names, because a symbolic link was followed or a `..` step taken in or below them.
+    deciding_directories: HashSet<FileIdentity>,
+    /// Whether one of `deciding_directories` is the directory of a configured root, so a server could have changed what the path names.
     is_refused: bool,
 }
 
@@ -195,7 +195,7 @@ impl DriveRoots {
         self.drives.remove(&device_id);
         let root = self.resolve(max_open_files, Some(device_id), path);
         self.drives.insert(device_id, root);
-        self.refuse_roots_reached_through_links();
+        self.refuse_roots_a_server_could_redirect();
     }
 
     /// Resolves `path` to a root that holds the directory it names open.
@@ -206,9 +206,9 @@ impl DriveRoots {
     /// `device_id` is `None` for the shared directory.
     fn resolve(&self, max_open_files: usize, device_id: Option<u32>, path: &str) -> ConfiguredRoot {
         let max_held_roots = max_open_files / 2;
-        let (directory, link_directories) = if self.held_count() < max_held_roots {
+        let (directory, deciding_directories) = if self.held_count() < max_held_roots {
             match Root::resolve(path) {
-                Ok(resolved) => (Some(resolved.root), resolved.link_directories),
+                Ok(resolved) => (Some(resolved.root), resolved.deciding_directories),
                 Err(error) => {
                     warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
                     (None, HashSet::new())
@@ -226,24 +226,29 @@ impl DriveRoots {
         ConfiguredRoot {
             path: path.to_owned(),
             directory,
-            link_directories,
+            deciding_directories,
             is_refused: false,
         }
     }
 
-    /// Refuses every root whose path followed a symbolic link in or below the directory of a configured root.
+    /// Refuses every root whose path followed a symbolic link or took a `..` step in or below the directory of a configured root, its own included.
+    ///
+    /// In a directory that a drive serves, and below it, a server decides what every entry is.
+    /// A root path that only descends from there ends at or below that directory whatever the server does.
+    /// A link read there, or a step back up from there, makes the end of the path depend on those entries, so the next time it is resolved it can lie anywhere.
+    /// A root is therefore usable only if its path did nothing but descend once it was in or below a configured root.
     ///
     /// Every root is judged again against all of them, refused ones included, so the outcome does not depend on the order the roots were given in.
     ///
-    /// UNTESTED: a link counts as lying below a root only when the directories walked from `/` to the link include the directory of that root.
+    /// UNTESTED: a link or a `..` step counts as lying below a root only when the directories walked from `/` to it include the directory of that root.
     /// A bind mount, or on macOS a firmlink such as `/Users` for `/System/Volumes/Data/Users`, shows a directory inside a root at another path.
     /// A link there has other directories above it, so a root reached through that link is not refused, although a server can replace the link.
     /// The tests cannot create mounts or firmlinks, so the rule assumes there is none; after changing it, check by hand what a root given through a link below a bind mount of another root is served.
     ///
-    /// UNTESTED: a link is checked against the roots of this backend only.
+    /// UNTESTED: a link or a `..` step is checked against the roots of this backend only.
     /// A link in a directory that another backend redirects under another configuration, before or beside this one, is followed like any link in local configuration, although the server of that backend can replace it.
     /// No test runs two configurations against one tree, so after changing which directories a link is checked against, check that a root path outside the roots of the backend is still resolved as the kernel resolves it.
-    fn refuse_roots_reached_through_links(&mut self) {
+    fn refuse_roots_a_server_could_redirect(&mut self) {
         let directories = self
             .shared
             .iter()
@@ -256,12 +261,12 @@ impl DriveRoots {
             .map(|root| (None, root))
             .chain(self.drives.iter_mut().map(|(device_id, root)| (Some(*device_id), root)));
         for (device_id, root) in roots {
-            let is_refused = !root.link_directories.is_disjoint(&directories);
+            let is_refused = !root.deciding_directories.is_disjoint(&directories);
             if is_refused && !root.is_refused {
                 warn!(
                     device_id,
                     root = root.path,
-                    "Refused a drive root reached through a symbolic link inside a redirected directory, so nothing is served from it"
+                    "Refused a drive root whose path follows a symbolic link or steps back up inside a redirected directory, so nothing is served from it"
                 );
             }
             root.is_refused = is_refused;
@@ -518,6 +523,7 @@ impl NixRdpdrBackend {
     /// `root` is resolved here, once, and the directory it names is held open until the backend is dropped, so every root has to be given before the backend serves a request.
     /// The drive then serves that directory whatever becomes of its path.
     /// `root` must be an absolute path without `.` or `..` components, and may lead through symbolic links that lie outside every root of the backend.
+    /// A `..` in the target of such a link must be taken outside every root as well.
     /// An unusable root, as [Drive roots on macOS and Linux](crate#drive-roots-on-macos-and-linux) defines it, is logged and leaves the drive configured but served nothing.
     /// Roots are checked against each other in whichever order they are given, so a root given later can make an earlier one unusable.
     /// A root given again for the same device replaces the earlier one.
