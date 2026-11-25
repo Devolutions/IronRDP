@@ -42,6 +42,7 @@ Roots that name the same directory each hold it open through their own path, so 
 Each root that holds its directory open counts as one open file against the limit on open files, and keeps its filesystem busy while the backend lives.
 A root that is unusable because of a symbolic link or a `..` step on its path, as described below, still holds its directory open and counts.
 The roots hold at most half of that limit, so at least half is left to open files: with a soft descriptor limit of 256, at most 32 roots hold their directory open.
+A root given beyond that is still resolved, so the other roots are checked against its directory, but it holds nothing open and is unusable.
 
 A root is unusable when its path:
 

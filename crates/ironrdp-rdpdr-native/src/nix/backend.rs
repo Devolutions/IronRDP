@@ -23,7 +23,7 @@ use tracing::{debug, trace, warn};
 use super::locks;
 use super::locks::{ByteRangeLocks, file_lock_conflict};
 pub(crate) use super::path::FileIdentity;
-use super::path::{InvalidPath, RelativePath, Root, io_to_errno};
+use super::path::{InvalidPath, RelativePath, ResolvedRoot, Root, io_to_errno};
 use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
 use super::wildcard::{contains_wildcards, is_name_in_expression};
 
@@ -99,11 +99,13 @@ impl Default for NixRdpdrBackend {
 /// While no drive has a root of its own, every drive serves the shared directory, which is opened by path for each request.
 /// From the first such root on, every root is resolved once and holds the directory it names open, the shared directory included.
 /// Roots that name the same directory each hold it open, through their own path.
+/// A root beyond the bound on roots held open, which [`Self::resolve`] sets, is resolved too, but holds nothing open.
 ///
-/// UNTESTED: a resolved root keeps one descriptor between requests, the one in its `directory`, and a root that did not resolve keeps none, like the shared directory while no drive has a root of its own.
+/// UNTESTED: a root that holds its directory open keeps one descriptor between requests, the one in its `directory`.
+/// A root that did not resolve keeps none, like the shared directory while no drive has a root of its own, and neither does a root beyond the bound on roots held open, whose walk closes its descriptors before the root is stored.
 /// `max_open_files` counts one open file for each root that holds its directory open, so any other descriptor kept for a root would come out of the quarter it leaves to the rest of the process.
 /// The tests count the places taken under the limit, not descriptors, which cannot be counted reliably in the one process they share.
-/// After changing how roots are opened or held, check that each resolved root keeps exactly the descriptor in its `directory`.
+/// After changing how roots are opened or held, check that each root that holds its directory open keeps exactly the descriptor in its `directory`, and that a root beyond the bound keeps none.
 #[derive(Debug)]
 struct DriveRoots {
     /// The path of the shared directory, which is the root of every device without a root of its own, or empty when there is none.
@@ -121,7 +123,11 @@ struct DriveRoots {
 struct ConfiguredRoot {
     /// The path the root was configured with, which is only logged once it is resolved.
     path: String,
-    /// The directory the path named, opened through that path, or `None` when it named none.
+    /// The directory the path named, or `None` when it named none.
+    ///
+    /// A root that does not hold its directory open has one too, because the paths of the other roots are checked against it all the same.
+    identity: Option<FileIdentity>,
+    /// The directory the path named, opened through that path, or `None` when it named none or the root lies beyond the bound on roots held open.
     ///
     /// A refused root keeps its directory open too, because replacing the root that refuses it makes it usable again without resolving its path again.
     directory: Option<Root>,
@@ -201,30 +207,38 @@ impl DriveRoots {
     /// Resolves `path` to a root that holds the directory it names open.
     ///
     /// The roots hold at most half of `max_open_files` directories open, so at least half the limit is left to open files however many roots are given.
-    /// A root beyond that is not resolved, so it opens nothing and is unusable.
+    /// A root beyond that is resolved all the same, but holds nothing open and is unusable.
+    /// Its directory has to be known, because a server may have been served it by an earlier backend built from the same configuration, in which a root given before it named no directory yet and took no place.
+    /// The paths of the other roots are therefore checked against it as against any other.
     /// It stays unusable when a place is freed later, because a root is resolved only when it is given.
     /// `device_id` is `None` for the shared directory.
     fn resolve(&self, max_open_files: usize, device_id: Option<u32>, path: &str) -> ConfiguredRoot {
         let max_held_roots = max_open_files / 2;
-        let (directory, deciding_directories) = if self.held_count() < max_held_roots {
-            match Root::resolve(path) {
-                Ok(resolved) => (Some(resolved.root), resolved.deciding_directories),
-                Err(error) => {
-                    warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
-                    (None, HashSet::new())
+        let (identity, directory, deciding_directories) = match Root::resolve(path) {
+            Ok(ResolvedRoot {
+                root,
+                deciding_directories,
+            }) => {
+                let is_held = self.held_count() < max_held_roots;
+                if !is_held {
+                    warn!(
+                        device_id,
+                        root = path,
+                        max_held_roots,
+                        "Reached the limit on drive roots held open, so nothing is served from this root"
+                    );
                 }
+                // A root that is not held is dropped here, which closes the last descriptor of its walk.
+                (Some(root.identity()), is_held.then_some(root), deciding_directories)
             }
-        } else {
-            warn!(
-                device_id,
-                root = path,
-                max_held_roots,
-                "Reached the limit on drive roots held open, so nothing is served from this root"
-            );
-            (None, HashSet::new())
+            Err(error) => {
+                warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
+                (None, None, HashSet::new())
+            }
         };
         ConfiguredRoot {
             path: path.to_owned(),
+            identity,
             directory,
             deciding_directories,
             is_refused: false,
@@ -253,7 +267,7 @@ impl DriveRoots {
             .shared
             .iter()
             .chain(self.drives.values())
-            .filter_map(|root| root.directory.as_ref().map(Root::identity))
+            .filter_map(|root| root.identity)
             .collect::<HashSet<_>>();
         let roots = self
             .shared
@@ -2111,7 +2125,11 @@ mod tests {
             create_options: CreateOptions::empty(),
             path: path.to_owned(),
         };
-        let response = create_drive(backend, request).expect("complete create");
+        create_response(&create_drive(backend, request).expect("complete create"))
+    }
+
+    /// The status and file ID of a Device Create Response.
+    fn create_response(response: &[SvcMessage]) -> (NtStatus, u32) {
         let response = response[0].encode_unframed_pdu().expect("encode create response");
         // RDPDR_HEADER (4 bytes), DeviceId and CompletionId precede IoStatus, and FileId follows it
         // ([MS-RDPEFS] 2.2.1.5.1 Device Create Response (DR_CREATE_RSP)).
@@ -2119,6 +2137,67 @@ mod tests {
             NtStatus::from(u32::from_le_bytes(response[12..16].try_into().expect("status"))),
             u32::from_le_bytes(response[16..20].try_into().expect("file ID")),
         )
+    }
+
+    /// Sends a create of `path` through `device_id` as the channel does, with every access, returning the status and file ID of the Device Create Response.
+    fn create_through_the_channel(
+        backend: &mut NixRdpdrBackend,
+        device_id: u32,
+        path: &str,
+        create_disposition: CreateDisposition,
+        create_options: CreateOptions,
+    ) -> (NtStatus, u32) {
+        let request = DeviceCreateRequest {
+            device_io_request: DeviceIoRequest {
+                device_id,
+                ..header(0, MajorFunction::Create)
+            },
+            desired_access: DesiredAccess::GENERIC_ALL,
+            allocation_size: 0,
+            file_attributes: FileAttributes::empty(),
+            shared_access: SharedAccess::empty(),
+            create_disposition,
+            create_options,
+            path: path.to_owned(),
+        };
+        let response = backend
+            .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request))
+            .expect("complete create");
+        create_response(&response)
+    }
+
+    /// Renames `from` to `to` through `device_id` as the channel does, with a handle opened for the rename and closed after it.
+    fn rename_through_the_channel(backend: &mut NixRdpdrBackend, device_id: u32, from: &str, to: &str) {
+        let (opened, file_id) = create_through_the_channel(
+            backend,
+            device_id,
+            from,
+            CreateDisposition::FILE_OPEN,
+            CreateOptions::empty(),
+        );
+        assert_eq!(opened, NtStatus::SUCCESS, "open {from}");
+        let header = |major_function| DeviceIoRequest {
+            device_id,
+            ..header(file_id, major_function)
+        };
+        let renamed = backend
+            .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+                ServerDriveSetInformationRequest {
+                    device_io_request: header(MajorFunction::SetInformation),
+                    set_buffer: FileInformationClass::Rename(FileRenameInformation {
+                        replace_if_exists: Boolean::False,
+                        file_name: to.to_owned(),
+                    }),
+                },
+            ))
+            .expect("complete rename");
+        // IoStatus lies at the same offset in every Device I/O Response ([MS-RDPEFS] 2.2.1.5 Device I/O Response (DR_DEVICE_IOCOMPLETION)).
+        assert_eq!(create_response(&renamed).0, NtStatus::SUCCESS, "rename {from} to {to}");
+        backend
+            .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+                device_io_request: header(MajorFunction::Close),
+            }))
+            .expect("complete close");
     }
 
     #[test]
@@ -2323,6 +2402,73 @@ mod tests {
         // The status of a create through a drive with any other unusable root.
         assert_eq!(beyond, NtStatus::UNSUCCESSFUL);
         assert_eq!(within, [NtStatus::SUCCESS; 4]);
+    }
+
+    /// A root beyond the bound is still resolved, so a root whose path follows a link below its directory is refused, although that directory is not held open.
+    /// Which root lies beyond the bound can change between backends built from one configuration: here the first root names no directory until a server creates it, and then takes the place the enclosing root had.
+    /// The server also renames a link to a directory outside every root into the path of the inner root, and a create through the inner drive must not land there.
+    // oracle: mutant the directory of a root beyond the bound left out of those a followed link is checked against
+    #[test]
+    fn a_root_reached_through_a_link_below_a_root_beyond_the_bound_is_served_nothing() {
+        // The devices given the root that is missing at first, the inner root and the enclosing root.
+        let (missing, inner, enclosing) = (1, 4, 5);
+        let roots = TwoRoots::new();
+        let (outer, outside) = (roots.sandbox.join("outer"), roots.sandbox.join("outside"));
+        for directory in [&outer.join("a").join("b"), &outer.join("d"), &outside] {
+            std::fs::create_dir_all(directory).expect("create directory");
+        }
+        std::os::unix::fs::symlink(&outside, outer.join("d").join("b")).expect("link directory");
+        // Four roots are held open under a cap of eight open files, so the last of five that name a directory lies beyond the bound.
+        let backend = || {
+            let mut backend = NixRdpdrBackend::default();
+            backend.max_open_files = 8;
+            [
+                outer.join("new"),
+                roots.first.clone(),
+                roots.second.clone(),
+                outer.join("a").join("b"),
+                outer.clone(),
+            ]
+            .iter()
+            .zip(missing..=enclosing)
+            .fold(backend, |backend, (root, device_id)| {
+                backend.with_drive_root(device_id, utf8(root))
+            })
+        };
+        let mut earlier = backend();
+        let created = create_through_the_channel(
+            &mut earlier,
+            enclosing,
+            r"\new",
+            CreateDisposition::FILE_CREATE,
+            CreateOptions::FILE_DIRECTORY_FILE,
+        );
+        assert_eq!(created.0, NtStatus::SUCCESS);
+        rename_through_the_channel(&mut earlier, enclosing, r"\a", r"\a_old");
+        rename_through_the_channel(&mut earlier, enclosing, r"\d", r"\a");
+        drop(earlier);
+
+        let mut later = backend();
+        let create_file = |backend: &mut NixRdpdrBackend, device_id| {
+            create_through_the_channel(
+                backend,
+                device_id,
+                r"\new.txt",
+                CreateDisposition::FILE_CREATE,
+                CreateOptions::empty(),
+            )
+            .0
+        };
+        let through_the_inner_drive = create_file(&mut later, inner);
+        let through_the_enclosing_drive = create_file(&mut later, enclosing);
+        let through_the_drive_missing_at_first = create_file(&mut later, missing);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_inner_drive, NtStatus::UNSUCCESSFUL);
+        assert_eq!(std::fs::read_dir(&outside).expect("list directory").count(), 0);
+        assert_eq!(through_the_enclosing_drive, NtStatus::UNSUCCESSFUL);
+        // The root that took the place of the enclosing one is served.
+        assert_eq!(through_the_drive_missing_at_first, NtStatus::SUCCESS);
     }
 
     /// However many roots are given, they leave half the places under the limit to open files.
