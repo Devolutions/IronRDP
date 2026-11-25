@@ -61,7 +61,7 @@ pub struct NixRdpdrBackend {
     /// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
     /// A root that holds its directory open holds one, and takes the place of one open file.
     /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
-    /// The roots take at most half the places, as [`DriveRoots::resolve`] bounds them, so at least half are left to open files.
+    /// The roots take at most half the places, as [`DriveRoots::record_root`] bounds them, so at least half are left to open files.
     max_open_files: usize,
     /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open), each with the names it was marked through, from the one marked first to the one marked last.
     ///
@@ -103,7 +103,7 @@ impl Default for NixRdpdrBackend {
 /// While no drive has a root of its own, every drive serves the shared directory, which is opened by path for each request.
 /// From the first such root on, every root is resolved once and holds the directory it names open, the shared directory included.
 /// Roots that name the same directory each hold it open, through their own path.
-/// A root beyond the bound on roots held open, which [`Self::resolve`] sets, is resolved too, but holds nothing open.
+/// A root beyond the bound on roots held open, which [`Self::record_root`] sets, is resolved too, but holds nothing open.
 ///
 /// UNTESTED: a root that holds its directory open keeps one descriptor between requests, the one in its `directory`.
 /// A root that did not resolve keeps none, like the shared directory while no drive has a root of its own, and neither does a root beyond the bound on roots held open, whose walk closes its descriptors before the root is stored.
@@ -196,29 +196,36 @@ impl DriveRoots {
     /// Resolves `path` as the root of `device_id` and holds the directory it names from now on, in place of an earlier root of that device.
     ///
     /// The shared directory is resolved and held with the first such root.
-    /// `max_open_files` is the limit of the backend on open files, which bounds the roots held open as [`Self::resolve`] describes.
+    /// `max_open_files` is the limit of the backend on open files, which bounds the roots held open as [`Self::record_root`] describes.
     fn set_drive_root(&mut self, max_open_files: usize, device_id: u32, path: &str) {
         if self.shared.is_none() && !self.shared_path.is_empty() {
-            self.shared = Some(self.resolve(max_open_files, None, &self.shared_path));
+            let shared_path = self.shared_path.clone();
+            self.record_root(max_open_files, None, &shared_path, Root::resolve(&shared_path));
         }
         // The earlier root of the device is released first, so the root that replaces it can take its place.
         self.drives.remove(&device_id);
-        let root = self.resolve(max_open_files, Some(device_id), path);
-        self.drives.insert(device_id, root);
-        self.refuse_roots_a_server_could_redirect();
+        self.record_root(max_open_files, Some(device_id), path, Root::resolve(path));
     }
 
-    /// Resolves `path` to a root that holds the directory it names open.
+    /// Records `walk`, the outcome of resolving `path`, as the root of `device_id`, and judges every root again.
     ///
+    /// The outcome is given rather than taken here, so a test can give one that no path produces on demand.
+    /// A root that resolved holds the directory `path` names open.
     /// The roots hold at most half of `max_open_files` directories open, so at least half the limit is left to open files however many roots are given.
-    /// A root beyond that is resolved all the same, but holds nothing open and is unusable.
+    /// A root beyond that is recorded all the same, but holds nothing open and is unusable.
     /// Its directory has to be known, because a server may have been served it by an earlier backend built from the same configuration, in which a root given before it named no directory yet and took no place.
     /// The paths of the other roots are therefore checked against it as against any other.
     /// It stays unusable when a place is freed later, because a root is resolved only when it is given.
     /// `device_id` is `None` for the shared directory.
-    fn resolve(&self, max_open_files: usize, device_id: Option<u32>, path: &str) -> ConfiguredRoot {
+    fn record_root(
+        &mut self,
+        max_open_files: usize,
+        device_id: Option<u32>,
+        path: &str,
+        walk: nix::Result<ResolvedRoot>,
+    ) {
         let max_held_roots = max_open_files / 2;
-        let (identity, directory, deciding_directories) = match Root::resolve(path) {
+        let (identity, directory, deciding_directories) = match walk {
             Ok(ResolvedRoot {
                 root,
                 deciding_directories,
@@ -240,13 +247,20 @@ impl DriveRoots {
                 (None, None, HashSet::new())
             }
         };
-        ConfiguredRoot {
+        let root = ConfiguredRoot {
             path: path.to_owned(),
             identity,
             directory,
             deciding_directories,
             is_refused: false,
+        };
+        match device_id {
+            Some(device_id) => {
+                self.drives.insert(device_id, root);
+            }
+            None => self.shared = Some(root),
         }
+        self.refuse_roots_a_server_could_redirect();
     }
 
     /// Refuses every root whose path followed a symbolic link or took a `..` step in or below the directory of a configured root, its own included.
