@@ -278,7 +278,7 @@ public static class RDCleanPathConnection
     {
         try
         {
-            var cert = new X509Certificate2(certDer);
+            var cert = X509CertificateLoader.LoadCertificate(certDer);
             return cert.GetPublicKey();
         }
         catch (Exception ex)
