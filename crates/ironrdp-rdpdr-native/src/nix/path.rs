@@ -4,8 +4,7 @@
 //! Each path is split into validated components and opened one component at a time relative to a directory descriptor.
 //! Symbolic links and mount points are refused, so no spelling, link or mount inside the root resolves outside it.
 //!
-//! The path of a root is local configuration, so `Root::resolve` follows the symbolic links in it, but reports the directories in which it followed a link or stepped back up through `..`.
-//! A server decides what every entry in or below a directory it is served is, so the backend refuses a root whose path did either there.
+//! The path of a root is local configuration, so `Root::resolve` follows the symbolic links in it, and reports the directories in which it followed a link or stepped back up through `..`, which `DriveRoots::refuse_roots_a_server_could_redirect` checks against the directories of the configured roots.
 //!
 //! UNTESTED: every filesystem call on a server-supplied path works on a descriptor from `Root::open_at`,
 //! `RelativePath::open_parent` or `RelativePath::open_directory`, never on a joined path string.
@@ -105,9 +104,7 @@ impl Root {
     /// No failure is retried another way, and [`names_no_directory`] tells whether one shows that the path names no directory.
     /// A directory that is reached but cannot be opened to be read is no failure of the walk: it is returned with the error in place of the root, so the other roots can still be checked against it.
     ///
-    /// A path that only descends from a directory ends at or below it, whatever the entries of that directory and of those below it are.
-    /// A link read in a directory, or a step back up from it, makes the end of the path depend on those entries, and it can then lie anywhere.
-    /// Both are therefore reported, with the directory they happen in and every directory above it.
+    /// Each link followed and each `..` step taken is reported with the directory it happens in and every directory above it, which `DriveRoots::refuse_roots_a_server_could_redirect` checks against the directories of the configured roots.
     ///
     /// UNTESTED: no component is entered or followed on the strength of an earlier look at it.
     /// `fstatat` only chooses between opening a directory and reading a link, and each of those fails on anything else: the open takes `O_NOFOLLOW | O_DIRECTORY`, and `readlinkat` reads nothing but a link.
