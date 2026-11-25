@@ -910,6 +910,56 @@ mod tests {
             .ok_or("RDPDR channel")
     }
 
+    fn negotiate_drive_and_smartcard_capabilities(
+        rdpdr: &mut ironrdp::rdpdr::Rdpdr,
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        use ironrdp::rdpdr::pdu::RdpdrPdu;
+        use ironrdp::rdpdr::pdu::efs::{CapabilityMessage, CoreCapability, CoreCapabilityKind};
+        use ironrdp::svc::SvcProcessor as _;
+        use ironrdp_core::{decode, encode_vec};
+
+        // oracle: spec MS-RDPEFS §1.3.1.1
+        let server_capabilities = RdpdrPdu::CoreCapability(CoreCapability {
+            capabilities: vec![
+                CapabilityMessage::new_general(1),
+                CapabilityMessage::new_drive(),
+                CapabilityMessage::new_smartcard(),
+            ],
+            kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+        });
+        let responses = rdpdr.process(&encode_vec(&server_capabilities)?)?;
+        assert_eq!(responses.len(), 1);
+        let response = responses[0].encode_unframed_pdu()?;
+        let RdpdrPdu::CoreCapability(response) = decode::<RdpdrPdu>(&response)? else {
+            return Err("expected client core capability response".into());
+        };
+        assert_eq!(response.kind, CoreCapabilityKind::ClientCoreCapabilityResponse);
+        assert!(response.capabilities.contains(&CapabilityMessage::new_drive()));
+        assert!(response.capabilities.contains(&CapabilityMessage::new_smartcard()));
+        Ok(())
+    }
+
+    // oracle: spec MS-RDPEFS §1.3.1.1
+    #[test]
+    fn drive_and_smartcard_capabilities_are_exchanged() -> Result<(), Box<dyn core::error::Error>> {
+        use ironrdp::rdpdr::pdu::RdpdrPdu;
+        use ironrdp::rdpdr::pdu::efs::{VersionAndIdPdu, VersionAndIdPduKind};
+        use ironrdp::svc::SvcProcessor as _;
+        use ironrdp_core::encode_vec;
+
+        let mut rdpdr = ironrdp::rdpdr::Rdpdr::new(Box::new(ironrdp::rdpdr::NoopRdpdrBackend), "client".to_owned())
+            .with_drives(Some(vec![(1, "Shared".to_owned())]))
+            .with_smartcard(42);
+        let announce = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+            version_major: 1,
+            version_minor: 12,
+            client_id: 0x1234,
+            kind: VersionAndIdPduKind::ServerAnnounceRequest,
+        });
+        rdpdr.process(&encode_vec(&announce)?)?;
+        negotiate_drive_and_smartcard_capabilities(&mut rdpdr)
+    }
+
     #[cfg(windows)]
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195247
     #[test]
@@ -988,6 +1038,7 @@ mod tests {
             })
         };
         rdpdr.process(&encode_vec(&version(VersionAndIdPduKind::ServerAnnounceRequest))?)?;
+        negotiate_drive_and_smartcard_capabilities(rdpdr)?;
         rdpdr.process(&encode_vec(&version(VersionAndIdPduKind::ServerClientIdConfirm))?)?;
         let announcements = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon)?)?;
         let mut drives = Vec::new();
