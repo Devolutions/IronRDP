@@ -1001,7 +1001,7 @@ pub(crate) fn set_information(
 /// A directory `to`, or one with open handles, is never replaced, and one marked for deletion fails with STATUS_DELETE_PENDING.
 /// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision, and a `to` naming another hard link of the source removes the source link.
 /// In one directory the two are told apart by the names their entries are stored under, and both links stay where a stored name cannot be told, as for another spelling in a case-insensitive directory on Linux, or one that differs in normalization on macOS.
-/// The link that stays takes the spelling of `to` where its stored name can be told.
+/// The link that stays takes the spelling of `to` where its stored name can be told and its directory lets it.
 /// A source name kept that way still names the file, so a later create of that name opens or overwrites it.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
 /// The target directory is opened as a create opens it, so a path through a directory marked for deletion is refused with STATUS_DELETE_PENDING.
@@ -1041,21 +1041,28 @@ fn rename(
             let same_directory =
                 FileIdentity::of(&fstat(from_parent.as_fd()).map_err(status_from_errno)?) == to_parent_identity;
             if source.st_nlink >= 2 && (!same_directory || from_name != to_name) {
-                let to_stored = stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?;
+                // Only macOS tells a stored name other than `to` itself, which is all a link in another directory needs it for.
+                let to_stored = if same_directory || cfg!(target_os = "macos") {
+                    stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?
+                } else {
+                    None
+                };
                 let is_another_link = !same_directory
                     || {
                         let from_stored = stored_name(from_parent.as_fd(), from_name).map_err(status_from_errno)?;
                         matches!((&from_stored, &to_stored), (Some(from_stored), Some(to_stored)) if from_stored != to_stored)
                     };
                 if is_another_link {
+                    unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
                     // [MS-FSA] names the link that stays as `to` spells it.
+                    // The source link is gone by now, so a spelling that cannot be changed is kept rather than failing the rename, which would leave the handle on a removed name.
                     if let Some(to_stored) = to_stored
                         && to_stored != to_name.as_bytes()
+                        && let Err(error) =
+                            renameat(to_parent.as_fd(), to_stored.as_slice(), to_parent.as_fd(), to_name)
                     {
-                        renameat(to_parent.as_fd(), to_stored.as_slice(), to_parent.as_fd(), to_name)
-                            .map_err(status_from_errno)?;
+                        warn!(%error, "Failed to respell the link a rename kept");
                     }
-                    unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
                     return Ok(to_ancestors);
                 }
             }

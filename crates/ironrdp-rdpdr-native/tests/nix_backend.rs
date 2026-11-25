@@ -877,6 +877,61 @@ fn rename_onto_another_spelling_of_a_link_in_another_directory_removes_the_sourc
     assert_eq!(stored_names(&fixture.share.join("dir")), ["Q.TXT"]);
 }
 
+/// A rename that cannot remove the source link fails without giving the other link the spelling it asked for.
+// oracle: regression #2525
+#[cfg(target_os = "macos")]
+#[test]
+fn a_refused_rename_onto_another_spelling_of_another_link_changes_nothing() {
+    let fixture = Fixture::new();
+    let (source, target) = (fixture.share.join("source"), fixture.share.join("target"));
+    std::fs::create_dir(&source).expect("create source directory");
+    std::fs::create_dir(&target).expect("create target directory");
+    std::fs::write(source.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(source.join("ab.txt"), target.join("q.txt")).expect("link file");
+    assert!(
+        target.join("Q.TXT").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\source\ab.txt", CreateDisposition::FILE_OPEN);
+    // An immutable directory keeps its entries whoever runs the tests.
+    nix::unistd::chflags(&source, nix::sys::stat::FileFlag::UF_IMMUTABLE).expect("make source directory immutable");
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\target\Q.TXT", false));
+    nix::unistd::chflags(&source, nix::sys::stat::FileFlag::empty()).expect("make source directory mutable");
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert_eq!(stored_names(&source), ["ab.txt"]);
+    assert_eq!(stored_names(&target), ["q.txt"]);
+}
+
+/// Once the source link is removed the rename has happened, so it succeeds even where the other link cannot take the spelling it asked for.
+// oracle: mutant a spelling that cannot be changed fails the rename after the source link is gone, leaving the handle on a removed name
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_onto_another_spelling_of_a_link_that_cannot_be_respelled_removes_the_source() {
+    let fixture = Fixture::new();
+    let target = fixture.share.join("target");
+    std::fs::create_dir(&target).expect("create target directory");
+    std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("ab.txt"), target.join("q.txt")).expect("link file");
+    assert!(
+        target.join("Q.TXT").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\ab.txt", CreateDisposition::FILE_OPEN);
+    // An immutable directory keeps its entries whoever runs the tests.
+    nix::unistd::chflags(&target, nix::sys::stat::FileFlag::UF_IMMUTABLE).expect("make target directory immutable");
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\target\Q.TXT", false));
+    nix::unistd::chflags(&target, nix::sys::stat::FileFlag::empty()).expect("make target directory mutable");
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(stored_names(&fixture.share), ["target"]);
+    assert_eq!(stored_names(&target), ["q.txt"]);
+}
+
 /// A rename onto another link of the file frees the source name, so a file that takes it shares nothing with the renamed one, whatever spelling its handles were opened under.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[cfg(target_os = "macos")]
