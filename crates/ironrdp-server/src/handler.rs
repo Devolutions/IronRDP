@@ -10,10 +10,18 @@ use ironrdp_pdu::input::{MousePdu, MouseRelPdu, MouseXPdu, scan_code, unicode};
 ///
 /// Describes a keyboard event received from the client
 ///
+/// `extended` and `extended1` are the scancode's 0xE0 and 0xE1 prefixes, the EXTENDED and EXTENDED1 flags of
+/// [2.2.8.1.1.3.1.1.1] Keyboard Event (TS_KEYBOARD_EVENT) and
+/// [2.2.8.1.2.2.1] Fast-Path Keyboard Event (TS_FP_KEYBOARD_EVENT).
+/// Pause arrives as an `extended1` 0x1D followed by a plain 0x45, the same codes as Ctrl followed by Num Lock.
+///
+/// [2.2.8.1.1.3.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/7acaec9f-c8a6-4ee9-87d6-d9b89cf56489
+/// [2.2.8.1.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/089d362b-31eb-4a1a-b6fa-92fe61bb5dbf
+///
 #[derive(Debug)]
 pub enum KeyboardEvent {
-    Pressed { code: u8, extended: bool },
-    Released { code: u8, extended: bool },
+    Pressed { code: u8, extended: bool, extended1: bool },
+    Released { code: u8, extended: bool, extended1: bool },
     UnicodePressed(u16),
     UnicodeReleased(u16),
     Synchronize(SynchronizeFlags),
@@ -116,10 +124,19 @@ pub trait RdpServerInputHandler: Send {
 impl From<(u8, fast_path::KeyboardFlags)> for KeyboardEvent {
     fn from((key, flags): (u8, fast_path::KeyboardFlags)) -> Self {
         let extended = flags.contains(fast_path::KeyboardFlags::EXTENDED);
+        let extended1 = flags.contains(fast_path::KeyboardFlags::EXTENDED1);
         if flags.contains(fast_path::KeyboardFlags::RELEASE) {
-            KeyboardEvent::Released { code: key, extended }
+            KeyboardEvent::Released {
+                code: key,
+                extended,
+                extended1,
+            }
         } else {
-            KeyboardEvent::Pressed { code: key, extended }
+            KeyboardEvent::Pressed {
+                code: key,
+                extended,
+                extended1,
+            }
         }
     }
 }
@@ -142,16 +159,19 @@ impl From<(u16, scan_code::KeyboardFlags)> for KeyboardEvent {
     )]
     fn from((key, flags): (u16, scan_code::KeyboardFlags)) -> Self {
         let extended = flags.contains(scan_code::KeyboardFlags::EXTENDED);
+        let extended1 = flags.contains(scan_code::KeyboardFlags::EXTENDED_1);
 
         if flags.contains(scan_code::KeyboardFlags::RELEASE) {
             KeyboardEvent::Released {
                 code: key as u8,
                 extended,
+                extended1,
             }
         } else {
             KeyboardEvent::Pressed {
                 code: key as u8,
                 extended,
+                extended1,
             }
         }
     }
@@ -328,45 +348,42 @@ impl From<ainput::MousePdu> for MouseEvent {
         // Unlike MousePdu/MouseXPdu, this PDU carries x/y on every event
         // regardless of which flag is set, including button events — so
         // buttons get position here too, not just Move.
+        // With REL set, x/y are a motion delta, for buttons too.
         let pos = || -> (u16, u16) {
             // assume positions are 0 <= u16::MAX
             (value.x.try_into().unwrap_or(0), value.y.try_into().unwrap_or(0))
         };
         let pressed = value.flags.contains(MouseEventFlags::DOWN);
+        let relative = value.flags.contains(MouseEventFlags::REL);
+        let button = [
+            (MouseEventFlags::BUTTON1, MouseButton::Left),
+            (MouseEventFlags::BUTTON2, MouseButton::Right),
+            (MouseEventFlags::BUTTON3, MouseButton::Middle),
+            (MouseEventFlags::XBUTTON1, MouseButton::X1),
+            (MouseEventFlags::XBUTTON2, MouseButton::X2),
+        ]
+        .into_iter()
+        .find(|(flag, _)| value.flags.contains(*flag))
+        .map(|(_, button)| button);
 
-        if value.flags.contains(MouseEventFlags::BUTTON1) {
-            let (x, y) = pos();
-            MouseEvent::Button {
-                x,
-                y,
-                button: MouseButton::Left,
+        match button {
+            Some(button) if relative => MouseEvent::ButtonRel {
+                x: value.x,
+                y: value.y,
+                button,
                 pressed,
+            },
+            Some(button) => {
+                let (x, y) = pos();
+                MouseEvent::Button { x, y, button, pressed }
             }
-        } else if value.flags.contains(MouseEventFlags::BUTTON2) {
-            let (x, y) = pos();
-            MouseEvent::Button {
-                x,
-                y,
-                button: MouseButton::Right,
-                pressed,
+            None if value.flags.contains(MouseEventFlags::WHEEL) => MouseEvent::Scroll { x: value.x, y: value.y },
+            None if relative => MouseEvent::RelMove { x: value.x, y: value.y },
+            None if value.flags.contains(MouseEventFlags::MOVE) => {
+                let (x, y) = pos();
+                MouseEvent::Move { x, y }
             }
-        } else if value.flags.contains(MouseEventFlags::BUTTON3) {
-            let (x, y) = pos();
-            MouseEvent::Button {
-                x,
-                y,
-                button: MouseButton::Middle,
-                pressed,
-            }
-        } else if value.flags.contains(MouseEventFlags::WHEEL) {
-            MouseEvent::Scroll { x: value.x, y: value.y }
-        } else if value.flags.contains(MouseEventFlags::REL) {
-            MouseEvent::RelMove { x: value.x, y: value.y }
-        } else if value.flags.contains(MouseEventFlags::MOVE) {
-            let (x, y) = pos();
-            MouseEvent::Move { x, y }
-        } else {
-            MouseEvent::Move { x: 0, y: 0 }
+            None => MouseEvent::Move { x: 0, y: 0 },
         }
     }
 }
