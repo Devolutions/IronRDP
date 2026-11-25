@@ -1000,6 +1000,7 @@ pub(crate) fn set_information(
 /// An existing `to` is a collision unless `replace_if_exists` is set.
 /// A directory `to`, or one with open handles, is never replaced, and one marked for deletion fails with STATUS_DELETE_PENDING.
 /// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision, and a `to` naming another hard link of the source removes the source link.
+/// Two links in one directory are told apart only when the handle's name and `to` are both spelled as their entries are stored, so under another spelling of either, both links stay.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
 /// The target directory is opened as a create opens it, so a path through a directory marked for deletion is refused with STATUS_DELETE_PENDING.
 ///
@@ -1031,14 +1032,17 @@ fn rename(
         Ok(target) if FileIdentity::of(&target) == open_file.identity => {
             // `to` is either the source link under another spelling, as a case- or normalization-insensitive filesystem resolves it, or another hard link of the same file.
             // POSIX rename leaves two hard links of one file both in place, while [MS-FSA] removes the source link.
-            // A link lives in one directory, so in another directory `to` is another link; in the same one it is only if an entry is stored under exactly that name.
-            // Otherwise the rename goes ahead, which at most changes the spelling of the only link and never removes it.
+            // A link lives in one directory, so in another directory `to` is another link.
+            // In the same one it is only if entries are stored under exactly the source name and exactly `to`.
+            // Otherwise either name may be another spelling of the entry the other resolves to, as the name of a handle opened under another spelling is, and removing the source name would remove that entry.
+            // The rename goes ahead instead, which at most changes the spelling of a link and never removes one.
             let same_directory =
                 FileIdentity::of(&fstat(from_parent.as_fd()).map_err(status_from_errno)?) == to_parent_identity;
             let is_another_link = source.st_nlink >= 2
                 && (!same_directory
                     || from_name != to_name
-                        && contains_entry(to_parent.as_fd(), to_name).map_err(status_from_errno)?);
+                        && contains_entry(to_parent.as_fd(), to_name).map_err(status_from_errno)?
+                        && contains_entry(from_parent.as_fd(), from_name).map_err(status_from_errno)?);
             if is_another_link {
                 unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
                 return Ok(to_ancestors);

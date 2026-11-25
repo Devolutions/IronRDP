@@ -1,6 +1,8 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use std::ops::Range;
+#[cfg(target_os = "macos")]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -707,6 +709,71 @@ fn rename_to_another_normalization_of_the_name_keeps_the_file() {
         std::fs::read(fixture.share.join(composed)).expect("read file"),
         b"accented"
     );
+}
+
+/// On a case-insensitive filesystem, a handle opened under another spelling renames the entry it was opened through, so renaming it to the stored name removes no link.
+// oracle: regression #2524
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_to_the_stored_name_through_another_spelling_keeps_a_hard_linked_file() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("ab.txt"), fixture.share.join("q.txt")).expect("link file");
+    assert!(
+        fixture.share.join("Ab.txt").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\Ab.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\ab.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(stored_names(&fixture.share), ["ab.txt", "q.txt"]);
+}
+
+/// A rename that only changes the spelling of an entry leaves a handle opened under a third spelling on that entry, so renaming through it to the new spelling removes no link.
+// oracle: regression #2524
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_to_the_spelling_another_handle_gave_the_entry_keeps_a_hard_linked_file() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("ab.txt"), fixture.share.join("q.txt")).expect("link file");
+    assert!(
+        fixture.share.join("Ab.txt").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let first_id = create(&mut backend, r"\ab.txt", CreateDisposition::FILE_OPEN);
+    let second_id = create(&mut backend, r"\Ab.txt", CreateDisposition::FILE_OPEN);
+    let response = set_information(&mut backend, first_id, rename_to(r"\AB.txt", false));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+
+    let response = set_information(&mut backend, second_id, rename_to(r"\AB.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(stored_names(&fixture.share), ["AB.txt", "q.txt"]);
+}
+
+/// A directory has a single link, so renaming it to the name it is stored under, through a handle opened under another spelling, succeeds.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_to_the_stored_name_through_another_spelling_keeps_a_directory() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("docs")).expect("create directory");
+    assert!(
+        fixture.share.join("Docs").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\Docs", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\docs", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(stored_names(&fixture.share), ["docs"]);
 }
 
 // oracle: spec MS-FSA §2.1.5.15.12
@@ -1671,6 +1738,23 @@ fn delete_pending(delete_pending: bool) -> FileInformationClass {
     FileInformationClass::Disposition(FileDispositionInformation {
         delete_pending: u8::from(delete_pending),
     })
+}
+
+/// The names `directory` stores its entries under, sorted, which a lookup on a case-insensitive filesystem does not show.
+#[cfg(target_os = "macos")]
+fn stored_names(directory: &Path) -> Vec<String> {
+    let mut names = std::fs::read_dir(directory)
+        .expect("list directory")
+        .map(|entry| {
+            entry
+                .expect("read directory entry")
+                .file_name()
+                .into_string()
+                .expect("UTF-8 name")
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names
 }
 
 /// Queries `pattern` and then continues until enumeration ends, returning the names in order and the final status.
