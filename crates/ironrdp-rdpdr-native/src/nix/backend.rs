@@ -33,6 +33,9 @@ const MAX_OPEN_FILES: usize = 1_024;
 /// The largest read the server may request, so a single request cannot make the client allocate gigabytes.
 const MAX_READ_LENGTH: usize = 1_024 * 1_024;
 
+/// The most names kept for one file marked for deletion, however many roots it was marked through.
+const MAX_PENDING_DELETE_NAMES: usize = 4;
+
 /// Serves redirected drives, and optionally a printer, on macOS and Linux.
 ///
 /// Each drive serves one directory, its root: the shared directory given to [`Self::new`], or a directory of its own given to [`Self::with_drive_root`].
@@ -67,13 +70,14 @@ pub struct NixRdpdrBackend {
     /// While every drive serves the shared directory, one name is kept per file: marking through another link or another drive replaces it.
     /// Once a drive has a root of its own, one name is kept for each root the file was marked through, because the root it was marked through last may be unable to remove a file that another root can.
     /// A mark then replaces only the name marked before through the same root, as [`DriveRoots::use_the_same_root`] decides, and becomes the name marked last.
+    /// A file that already has `MAX_PENDING_DELETE_NAMES` names of other roots loses the one marked first, so it keeps the names marked last.
     /// The names are tried from the last to the first when the last handle closes, and the first that removes the file ends the delete.
     ///
     /// INVARIANT: a file is kept only with a name, so a file is marked exactly while it has an entry.
     ///
-    /// INVARIANT: the names of a file each belong to a different root: at most one to the shared directory, and one to each drive with a root of its own.
-    /// A request can carry any device ID, so a name for each device would let the server keep as many names as it likes for a file it holds open.
-    /// A marked file has an open handle, so the names of all files together number at most the open files times one more than the configured roots.
+    /// INVARIANT: a file has at most `MAX_PENDING_DELETE_NAMES` names, each of a different root: at most one of the shared directory, and one of each drive with a root of its own.
+    /// One open handle keeps every name of its file, each with a path and the directories on it, so a name for every root would let the server keep as many names as there are roots for each file it holds open.
+    /// A marked file has an open handle, so the names of all files together number at most `MAX_PENDING_DELETE_NAMES` times the limit on open files.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/d142c93a-72bc-4b05-9d96-8e00371c3308
     pending_deletes: HashMap<FileIdentity, Vec<PendingDelete>>,
@@ -1516,6 +1520,10 @@ fn mark_for_deletion(
     // A different root may be able to remove the file where this one cannot, so the names marked through other roots are kept.
     // With only a shared directory every device uses the one root, so the new name is the only one.
     names.retain(|earlier| !roots.use_the_same_root(earlier.device_id, name.device_id));
+    // The names are kept from the one marked first to the one marked last, so the first makes room for the new one.
+    if MAX_PENDING_DELETE_NAMES <= names.len() {
+        names.remove(0);
+    }
     names.push(name);
 }
 

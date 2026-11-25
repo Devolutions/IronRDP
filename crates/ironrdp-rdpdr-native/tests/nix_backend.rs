@@ -3254,6 +3254,48 @@ fn a_mark_through_a_drive_with_its_own_root_keeps_the_name_of_another_with_the_s
     assert_eq!(names_in(&fixture.share), Vec::<String>::new());
 }
 
+/// A file keeps the four names it was marked through last, so the names kept for it do not grow with the drives that reach it.
+/// Six drives with roots of their own name one directory, and each marks the file through a hard link of its own, `link-1.txt` through the first to `link-6.txt` through the last.
+/// A local process then removes the links marked last, and the delete has to do with the names that are left when the handles close.
+/// The fourth name from the last still removes the file, and no name before it is tried: the links marked through the two earliest drives stay in both cases.
+// oracle: mutant a name kept for every root a file was marked through, or fewer than the four marked last kept
+#[rstest]
+#[case::the_fourth_name_from_the_last_removes_the_file(3)]
+#[case::no_name_before_the_fourth_from_the_last_is_tried(4)]
+fn a_file_marked_through_six_drives_keeps_the_four_names_marked_last(#[case] removed_locally: usize) {
+    let fixture = Fixture::new();
+    let links = [1, 2, 3, 4, 5, 6].map(|device_id| (device_id, format!("link-{device_id}.txt")));
+    std::fs::write(fixture.share.join("link-1.txt"), b"linked").expect("write file");
+    for (_, name) in &links[1..] {
+        std::fs::hard_link(fixture.share.join("link-1.txt"), fixture.share.join(name)).expect("link file");
+    }
+    let mut backend = links
+        .iter()
+        .fold(NixRdpdrBackend::default(), |backend, (device_id, _)| {
+            backend.with_drive_root(*device_id, utf8(&fixture.share))
+        });
+    let handles = links.each_ref().map(|(device_id, name)| {
+        let path = format!(r"\{name}");
+        (
+            *device_id,
+            create_on(&mut backend, *device_id, &path, CreateDisposition::FILE_OPEN),
+        )
+    });
+    for (device_id, file_id) in handles {
+        let marked = set_information_on(&mut backend, device_id, file_id, delete_pending(true));
+        assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    }
+    for (_, name) in links.iter().rev().take(removed_locally) {
+        std::fs::remove_file(fixture.share.join(name)).expect("remove locally");
+    }
+
+    for (device_id, file_id) in handles {
+        close_on(&mut backend, device_id, file_id);
+    }
+
+    assert_eq!(names_in(&fixture.share), ["link-1.txt", "link-2.txt"]);
+}
+
 /// A rename does not replace a file that is open through the other drive that reaches it, whichever drive is the enclosing one.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[rstest]

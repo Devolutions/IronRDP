@@ -74,6 +74,7 @@ Once a drive has a root of its own, the directories that led to a file when it w
 The file is deleted by a name it was marked through, which those directories are part of.
 A file marked for deletion through several drives is deleted by the name marked last that still removes it.
 Each drive with a root of its own keeps the name it marked last, and the drives that serve the shared directory keep one name between them, the one marked last through any of them.
+A file keeps at most four names, the ones marked last: a mark through a fifth root drops the name marked first, which then neither deletes the file nor keeps its directories from being renamed.
 When a name fails, as beneath a root on a read-only mount, the name marked before it through another root is tried.
 With only a shared directory, the name marked last is the only one, whichever drive marked it.
 
