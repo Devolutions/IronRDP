@@ -1,9 +1,7 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use std::ops::Range;
-#[cfg(target_os = "macos")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use ironrdp_core::ReadCursor;
@@ -663,7 +661,7 @@ fn rename_onto_another_link_of_the_same_file_removes_the_source() {
     );
 }
 
-/// Renaming a file to the name its link already has changes nothing, however many links it has.
+/// Renaming a file to the name it was opened under changes nothing, however many links it has.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[test]
 fn rename_onto_its_own_name_keeps_a_hard_linked_file() {
@@ -676,8 +674,7 @@ fn rename_onto_its_own_name_keeps_a_hard_linked_file() {
     let response = set_information(&mut backend, file_id, rename_to(r"\a.txt", false));
 
     assert_eq!(response_status(&response), NtStatus::SUCCESS);
-    assert!(fixture.share.join("a.txt").exists());
-    assert!(fixture.share.join("b.txt").exists());
+    assert_eq!(stored_names(&fixture.share), ["a.txt", "b.txt"]);
 }
 
 /// A link of the same name in another directory is another link, so the source goes.
@@ -749,7 +746,28 @@ fn rename_to_another_normalization_of_the_name_keeps_the_file() {
     );
 }
 
-/// On a case-insensitive filesystem, a handle opened under another spelling renames the entry it was opened through, so renaming it to the stored name removes no link.
+/// A rename that only changes the case of a name re-spells that link, however many links the file has.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_to_another_spelling_keeps_a_hard_linked_file() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("ab.txt"), fixture.share.join("q.txt")).expect("link file");
+    assert!(
+        fixture.share.join("AB.txt").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\ab.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\AB.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(stored_names(&fixture.share), ["AB.txt", "q.txt"]);
+}
+
+/// On a case-insensitive filesystem, another spelling of the stored name opens the same entry, so renaming it to the stored name removes no link.
 // oracle: regression #2524
 #[cfg(target_os = "macos")]
 #[test]
@@ -794,11 +812,11 @@ fn rename_to_the_spelling_another_handle_gave_the_entry_keeps_a_hard_linked_file
     assert_eq!(stored_names(&fixture.share), ["AB.txt", "q.txt"]);
 }
 
-/// A directory has a single link, so renaming it to the name it is stored under, through a handle opened under another spelling, succeeds.
+/// A directory has one link, however many Unix counts, so renaming it to its stored name through a handle opened under another spelling succeeds.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[cfg(target_os = "macos")]
 #[test]
-fn rename_to_the_stored_name_through_another_spelling_keeps_a_directory() {
+fn rename_to_the_stored_name_through_another_spelling_succeeds_for_a_directory() {
     let fixture = Fixture::new();
     std::fs::create_dir(fixture.share.join("docs")).expect("create directory");
     assert!(
@@ -1779,7 +1797,6 @@ fn delete_pending(delete_pending: bool) -> FileInformationClass {
 }
 
 /// The names `directory` stores its entries under, sorted, which a lookup on a case-insensitive filesystem does not show.
-#[cfg(target_os = "macos")]
 fn stored_names(directory: &Path) -> Vec<String> {
     let mut names = std::fs::read_dir(directory)
         .expect("list directory")
