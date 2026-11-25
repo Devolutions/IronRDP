@@ -2632,7 +2632,7 @@ mod tests {
         .0
     }
 
-    /// A walk that fails for want of a descriptor leaves the directory of its root undetermined, and that directory may hold the link another root was reached through.
+    /// A walk that fails for want of a descriptor, or of permission to search a directory, leaves the directory of its root undetermined, and that directory may hold the link another root was reached through.
     /// That root is therefore served nothing, wherever its link lies and in whichever order the roots are given.
     // oracle: mutant a root reached through a link served while the directory of another root could not be determined
     #[rstest]
@@ -2640,9 +2640,10 @@ mod tests {
     #[case::the_failed_walk_last([LINKED, DESCENDING, FAILED])]
     fn a_root_reached_through_a_link_is_served_nothing_while_the_directory_of_another_root_is_undetermined(
         #[case] order: [u32; 3],
+        #[values(Errno::EMFILE, Errno::EACCES)] error: Errno,
     ) {
         let fixture = RootsBesideAFailedWalk::new();
-        let mut backend = fixture.backend(order, Errno::EMFILE);
+        let mut backend = fixture.backend(order, error);
 
         let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
 
@@ -2707,7 +2708,6 @@ mod tests {
     #[case::too_many_links(Errno::ELOOP)]
     #[case::malformed(Errno::EINVAL)]
     #[case::too_many_components(Errno::ENAMETOOLONG)]
-    #[case::no_permission(Errno::EACCES)]
     fn a_root_reached_through_a_link_is_served_beside_a_root_whose_path_names_no_directory(#[case] error: Errno) {
         let fixture = RootsBesideAFailedWalk::new();
         let mut backend = fixture.backend([FAILED, LINKED, DESCENDING], error);

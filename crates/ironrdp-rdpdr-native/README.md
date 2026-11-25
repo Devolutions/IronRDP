@@ -51,7 +51,7 @@ A root is unusable when its path:
 - names a directory that the process may search but not read;
 - follows a symbolic link in or below the directory of any root of the same backend, its own included;
 - takes a `..` step, from the target of a symbolic link, in or below the directory of any root of the same backend, its own included;
-- cannot be resolved for a reason that leaves the directory it names undetermined, for example when the process has run out of descriptors;
+- cannot be resolved for a reason that leaves the directory it names undetermined, for example when the process has run out of descriptors or may not search a directory on the path;
 - follows a symbolic link or takes a `..` step anywhere, while the directory of another root of the same backend is undetermined;
 - is given when the roots given before it already hold half the limit on open files.
 
@@ -60,9 +60,9 @@ A path that only descends from there ends at or below that directory, whatever t
 A link read there, or a step back up from there, makes the end of the path depend on those entries, so it could name any directory the next time it is resolved.
 Symbolic links that lie outside every root are followed, and so are the `..` components of their targets that are taken outside every root.
 Whether a link lies outside every root can be told only while the directory of every root is known.
-A root that names no directory does not affect the other roots: that covers a path that is malformed, exceeds the bounds above, or leads to nothing the process may search.
+A root that names no directory does not affect the other roots: that covers a path that is malformed, exceeds the bounds above, or leads to a missing entry or to one that is not a directory.
 A root whose directory may be searched but not read holds nothing open, and the other roots are still checked against that directory, because a server may have been served it while it could be read.
-A root that fails to resolve for any other reason, for example because the process has run out of descriptors, may name a directory that a server was served before, and a link anywhere may then lie in or below it.
+A root that fails to resolve for any other reason, for example because the process has run out of descriptors or may not search a directory on the path, may name a directory that a server was served before, and a link anywhere may then lie in or below it.
 While such a root is configured, every root reached through a symbolic link or a `..` step is unusable, and the roots whose paths only descend are served.
 A drive with an unusable root is still configured and announced, but is served nothing: a create through it fails as it does when the shared directory cannot be opened.
 The other drives are served, and a warning is logged when a root becomes unusable.

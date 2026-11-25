@@ -263,13 +263,13 @@ impl Root {
 
 /// Whether `error`, with which [`Root::resolve`] failed, shows that the path names no directory a drive could serve.
 ///
-/// The errors listed are those of a path that is missing, is not a directory, loops or exceeds the bounds of the walk, is malformed, or may not be searched.
+/// Each error listed says that the path names nothing: a missing component, a component that is not a directory, a loop or the bounds of the walk, or a path of the wrong form.
 /// A server cannot bring one about for a root that lies in no other root of its backend, because it can change nothing on the path of such a root.
 /// For a root that lies in another root it can, but whatever it changed through either then lies in or below the directory of the enclosing root, which the other roots are checked against.
 /// Either way, no directory that a server was served goes unchecked because the path now names none.
 ///
-/// Any other error says nothing of the path: the process ran out of descriptors or memory, the filesystem failed, or a directory moved during the walk.
-/// The path may then name a directory that an earlier backend built from the same configuration served, and nothing shows which.
+/// Any other error says nothing of the path: the process ran out of descriptors or memory, the filesystem failed, a directory moved during the walk, or a directory on the path may not be searched.
+/// The path may then name a directory that an earlier backend built from the same configuration served, as one beneath a directory that could be searched then, and nothing shows which.
 /// The errors of the first kind are listed rather than those of the second, so an error that nobody foresaw leaves the directory undetermined.
 ///
 /// UNTESTED: an error that is not listed leaves the directory undetermined.
@@ -278,7 +278,7 @@ impl Root {
 pub(crate) fn names_no_directory(error: Errno) -> bool {
     matches!(
         error,
-        Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP | Errno::EINVAL | Errno::ENAMETOOLONG | Errno::EACCES
+        Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP | Errno::EINVAL | Errno::ENAMETOOLONG
     )
 }
 
@@ -539,13 +539,13 @@ mod tests {
     #[case::too_many_links(Errno::ELOOP)]
     #[case::malformed(Errno::EINVAL)]
     #[case::too_many_components(Errno::ENAMETOOLONG)]
-    #[case::no_permission(Errno::EACCES)]
     fn an_error_of_the_path_itself_shows_that_it_names_no_directory(#[case] error: Errno) {
         assert!(names_no_directory(error));
     }
 
     // oracle: mutant an error that says nothing of the path taken to show that it names no directory
     #[rstest]
+    #[case::no_permission_to_search_a_directory(Errno::EACCES)]
     #[case::no_descriptor_left_to_the_process(Errno::EMFILE)]
     #[case::no_descriptor_left_to_the_system(Errno::ENFILE)]
     #[case::out_of_memory(Errno::ENOMEM)]
