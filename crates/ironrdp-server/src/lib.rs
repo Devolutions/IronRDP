@@ -74,8 +74,9 @@ pub use server::{
 };
 #[cfg(feature = "__test")]
 pub use server::{
-    FINAL_FLUSH_TIMEOUT, MAX_QUEUED_REPLY_BYTES, OutboundQueue, QueuedWriter, client_max_request_size,
-    dispatch_static_channel_events, drive_static_channel_events, pick_remotefx_codec,
+    ConnectionOutput, ConnectionState, FINAL_FLUSH_TIMEOUT, MAX_QUEUED_REPLY_BYTES, OutboundQueue, PduContext,
+    QueuedWriter, client_max_request_size, dispatch_static_channel_events, drive_static_channel_events,
+    pick_remotefx_codec,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]

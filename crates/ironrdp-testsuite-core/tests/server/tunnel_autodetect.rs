@@ -7,23 +7,21 @@ use ironrdp_rdpemt::{SubHeaderType, TunnelSubHeader};
 use ironrdp_server::autodetect::AutoDetectManager;
 use ironrdp_server::{autodetect_response_from_sub_header, autodetect_sub_header};
 
-/// On the tunnel the request is the sub-header itself, in a PDU with no
-/// data, so the client's byte count covers only the payloads sent between
-/// Start and Stop.
+/// On the tunnel the request is the sub-header itself, with none of the
+/// security header that frames it on the message channel.
+// oracle: spec MS-RDPEMT §2.2.1.1.1 and MS-RDPBCGR §1.3.9
 #[test]
-fn a_tunnel_auto_detect_request_is_bare_and_alone() {
-    let message =
+fn a_tunnel_auto_detect_request_is_bare() {
+    let sub_header =
         autodetect_sub_header(&AutoDetectRequest::bw_start_continuous(7)).expect("encode Bandwidth Measure Start");
 
-    assert!(message.data.is_empty());
-    assert_eq!(message.sub_headers.len(), 1);
-    assert_eq!(message.sub_headers[0].sub_header_type, SubHeaderType::AutoDetectRequest);
+    assert_eq!(sub_header.sub_header_type, SubHeaderType::AutoDetectRequest);
     // RDP_BW_START is the sub-header: SubHeaderLength/headerLength 6,
     // SubHeaderType/headerTypeId TYPE_ID_AUTODETECT_REQUEST, then
     // sequenceNumber 7 and requestType 0x0014 as SubHeaderData.
-    assert_eq!(message.sub_headers[0].data, [0x07, 0x00, 0x14, 0x00]);
+    assert_eq!(sub_header.data, [0x07, 0x00, 0x14, 0x00]);
     assert_eq!(
-        encode_vec(&message.sub_headers[0]).expect("encode the sub-header"),
+        encode_vec(&sub_header).expect("encode the sub-header"),
         [0x06, 0x00, 0x07, 0x00, 0x14, 0x00]
     );
 }

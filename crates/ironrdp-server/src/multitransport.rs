@@ -29,7 +29,7 @@ const UDP_ACCEPT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Shared handle to an established sideband UDP transport.
 ///
-/// `send()` uses `UdpTransportSender`, cloned once at construction from the
+/// `send_message()` uses `UdpTransportSender`, cloned once at construction from the
 /// underlying `UdpTransport`. That handle is entirely independent of the
 /// `Mutex` below, so it never contends with (or blocks behind) `recv()`,
 /// which holds that lock for the full duration of its idle wait for the
@@ -52,16 +52,10 @@ impl UdpTransportHandle {
         }
     }
 
-    /// Sends one higher-layer (raw DVC) payload over the tunnel.
+    /// Sends one Tunnel Data PDU's content, sub-headers included.
     ///
     /// A failure is logged here rather than propagated: The RDP session never
     /// fails over an optional sideband transport.
-    pub(crate) async fn send(&self, data: Vec<u8>) {
-        self.send_message(TunnelMessage::from(data)).await;
-    }
-
-    /// Sends one Tunnel Data PDU's content, sub-headers included; failures
-    /// are handled as in [`Self::send`].
     pub(crate) async fn send_message(&self, message: TunnelMessage) {
         if let Err(error) = self.sender.send_message(message).await {
             warn!(%error, "Failed to send data over UDP transport");

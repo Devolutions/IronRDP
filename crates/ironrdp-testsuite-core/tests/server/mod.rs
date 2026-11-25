@@ -10,6 +10,7 @@ mod dynamic_channel_factory;
 mod echo;
 mod fast_path;
 mod finalize_timeout;
+mod graphics_bandwidth;
 mod max_request_size;
 mod multitransport_finalize;
 mod negotiation_timeout;
