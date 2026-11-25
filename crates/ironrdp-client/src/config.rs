@@ -1006,6 +1006,7 @@ pub struct ConfigBuilder {
     pointer_software_rendering: Option<bool>,
     performance_flags: Option<ironrdp_pdu::rdp::client_info::PerformanceFlags>,
     enable_audio_playback: Option<bool>,
+    audio_playback_mode: Option<ironrdp_connector::AudioPlaybackMode>,
     enable_audio_capture: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
@@ -1819,14 +1820,14 @@ impl ConfigBuilder {
 
     /// Set the public RDP audio redirection mode.
     ///
-    /// `PlayOnServer` and `Disabled` currently share the same client-info outcome:
-    /// both clear local RDPSND playback and set `INFO_NOAUDIOPLAYBACK`. Distinct
-    /// `INFO_REMOTECONSOLEAUDIO` (true “play on server console”) is not wired yet.
+    /// `PlayOnServer` sets `INFO_REMOTECONSOLEAUDIO` and `INFO_NOAUDIOPLAYBACK`;
+    /// `Disabled` sets only `INFO_NOAUDIOPLAYBACK`.
     #[cfg(feature = "sound")]
     #[must_use]
     pub fn with_audio_mode(mut self, mode: ironrdp_cfg::AudioMode) -> Self {
         self.channels.sound = matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient);
         self.enable_audio_playback = Some(matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient));
+        self.audio_playback_mode = Some(audio_playback_mode(mode));
         self.properties.set_audio_mode(mode);
         self
     }
@@ -2752,7 +2753,7 @@ impl ConfigBuilder {
             autologon: self.autologon.unwrap_or(false),
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
             enable_audio_capture: self.enable_audio_capture.unwrap_or(false),
-            play_audio_on_server: false,
+            audio_playback_mode: self.audio_playback_mode,
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
@@ -3026,20 +3027,28 @@ impl ConfigBuilder {
         }
         #[cfg(feature = "sound")]
         match ps.audio_mode() {
-            Ok(Some(AudioMode::RedirectToClient)) => {
+            Ok(Some(mode @ AudioMode::RedirectToClient)) => {
                 self.enable_audio_playback = Some(true);
+                self.audio_playback_mode = Some(audio_playback_mode(mode));
                 self.channels.sound = true;
             }
-            Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => {
+            Ok(Some(mode @ (AudioMode::PlayOnServer | AudioMode::Disabled))) => {
                 self.enable_audio_playback = Some(false);
+                self.audio_playback_mode = Some(audio_playback_mode(mode));
                 self.channels.sound = false;
             }
             _ => {}
         }
         #[cfg(not(feature = "sound"))]
         match ps.audio_mode() {
-            Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => self.enable_audio_playback = Some(false),
-            Ok(Some(AudioMode::RedirectToClient)) => self.enable_audio_playback = Some(true),
+            Ok(Some(mode @ (AudioMode::PlayOnServer | AudioMode::Disabled))) => {
+                self.enable_audio_playback = Some(false);
+                self.audio_playback_mode = Some(audio_playback_mode(mode));
+            }
+            Ok(Some(mode @ AudioMode::RedirectToClient)) => {
+                self.enable_audio_playback = Some(true);
+                self.audio_playback_mode = Some(audio_playback_mode(mode));
+            }
             _ => {}
         }
         #[cfg(feature = "sound")]
@@ -3353,6 +3362,14 @@ fn kerberos_config_from_properties(
             kdc_resolution: KdcResolution::KdcUrl(Some(url)),
             hostname: client_name.to_owned(),
         })
+}
+
+fn audio_playback_mode(mode: ironrdp_cfg::AudioMode) -> ironrdp_connector::AudioPlaybackMode {
+    match mode {
+        ironrdp_cfg::AudioMode::RedirectToClient => ironrdp_connector::AudioPlaybackMode::Client,
+        ironrdp_cfg::AudioMode::PlayOnServer => ironrdp_connector::AudioPlaybackMode::Server,
+        ironrdp_cfg::AudioMode::Disabled => ironrdp_connector::AudioPlaybackMode::Disabled,
+    }
 }
 
 #[cfg(test)]
@@ -3857,6 +3874,22 @@ mod tests {
         let builder = ConfigBuilder::from_property_set(&properties).expect("valid WebAuthn property");
         assert!(builder.channels.webauthn);
         assert!(builder.properties.redirect_webauthn().unwrap());
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn audio_mode_maps_to_connector_playback_mode() {
+        use ironrdp_cfg::AudioMode;
+        use ironrdp_connector::AudioPlaybackMode;
+
+        for (mode, expected) in [
+            (AudioMode::RedirectToClient, AudioPlaybackMode::Client),
+            (AudioMode::PlayOnServer, AudioPlaybackMode::Server),
+            (AudioMode::Disabled, AudioPlaybackMode::Disabled),
+        ] {
+            let builder = ConfigBuilder::new().with_audio_mode(mode);
+            assert_eq!(builder.audio_playback_mode, Some(expected));
+        }
     }
 
     #[cfg(feature = "webauthn")]

@@ -2377,18 +2377,17 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }
 
-    // Playing on the server and playing on the client are mutually exclusive; like other clients,
-    // remote console audio is always sent together with INFO_NOAUDIOPLAYBACK.
-    if !config.enable_audio_playback || config.play_audio_on_server {
-        flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
+    // Remote console audio is always sent together with INFO_NOAUDIOPLAYBACK, as other clients do.
+    match config.audio_playback_mode() {
+        crate::AudioPlaybackMode::Client => {}
+        crate::AudioPlaybackMode::Server => {
+            flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK | ClientInfoFlags::REMOTE_CONSOLE_AUDIO;
+        }
+        crate::AudioPlaybackMode::Disabled => flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK,
     }
 
     if config.enable_audio_capture {
         flags |= ClientInfoFlags::AUDIO_CAPTURE;
-    }
-
-    if config.play_audio_on_server {
-        flags |= ClientInfoFlags::REMOTE_CONSOLE_AUDIO;
     }
 
     if config.remote_application_mode {
@@ -2514,7 +2513,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
-            play_audio_on_server: false,
+            audio_playback_mode: None,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2578,7 +2577,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: true,
             enable_audio_capture: true,
-            play_audio_on_server: false,
+            audio_playback_mode: None,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2601,11 +2600,27 @@ mod tests {
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
 
         assert!(!client_info.flags.contains(ClientInfoFlags::REMOTE_CONSOLE_AUDIO));
-        config.play_audio_on_server = true;
-        let client_info =
-            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
-        assert!(client_info.flags.contains(ClientInfoFlags::REMOTE_CONSOLE_AUDIO));
-        assert!(client_info.flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
+
+        for (mode, no_playback, remote_console) in [
+            (crate::AudioPlaybackMode::Client, false, false),
+            (crate::AudioPlaybackMode::Server, true, true),
+            (crate::AudioPlaybackMode::Disabled, true, false),
+        ] {
+            config.audio_playback_mode = Some(mode);
+            let flags = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false)
+                .client_info
+                .flags;
+            assert_eq!(
+                flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK),
+                no_playback,
+                "{mode:?}"
+            );
+            assert_eq!(
+                flags.contains(ClientInfoFlags::REMOTE_CONSOLE_AUDIO),
+                remote_console,
+                "{mode:?}"
+            );
+        }
     }
 
     /// A plain client [`Config`] for tests to change what they look at.
@@ -2651,7 +2666,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
-            play_audio_on_server: false,
+            audio_playback_mode: None,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2759,7 +2774,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
-            play_audio_on_server: false,
+            audio_playback_mode: None,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),

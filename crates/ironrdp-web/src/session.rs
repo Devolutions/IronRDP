@@ -1923,7 +1923,7 @@ fn build_config(
         autologon: false,
         enable_audio_playback: false,
         enable_audio_capture: false,
-        play_audio_on_server: false,
+        audio_playback_mode: None,
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,

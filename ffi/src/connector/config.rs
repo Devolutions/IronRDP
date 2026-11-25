@@ -90,13 +90,23 @@ pub mod ffi {
         pub platform: Option<MajorPlatformType>,
         pub enable_server_pointer: Option<bool>,
         pub autologon: Option<bool>,
-        pub no_audio_playback: Option<bool>,
-        pub play_audio_on_server: Option<bool>,
+        pub audio_playback_mode: Option<AudioPlaybackMode>,
         pub pointer_software_rendering: Option<bool>,
         pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
         pub timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>,
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
         pub direct_dvc: Option<DirectDvcConfig>,
+    }
+
+    /// Where the server plays audio (the `audiomode` `.rdp` setting).
+    #[diplomat::enum_convert(ironrdp::connector::AudioPlaybackMode)]
+    pub enum AudioPlaybackMode {
+        /// Redirect audio to this computer.
+        Client,
+        /// Leave audio playing on the remote computer.
+        Server,
+        /// Do not play audio.
+        Disabled,
     }
 
     pub enum KeyboardType {
@@ -224,6 +234,11 @@ pub mod ffi {
             self.autologon = Some(autologon);
         }
 
+        #[diplomat::attr(auto, setter = "audio_playback_mode")]
+        pub fn set_audio_playback_mode(&mut self, mode: AudioPlaybackMode) {
+            self.audio_playback_mode = Some(mode);
+        }
+
         #[diplomat::attr(auto, setter = "pointer_software_rendering")]
         pub fn set_pointer_software_rendering(&mut self, pointer_software_rendering: bool) {
             self.pointer_software_rendering = Some(pointer_software_rendering);
@@ -286,9 +301,9 @@ pub mod ffi {
 
                 enable_server_pointer: self.enable_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
-                enable_audio_playback: !self.no_audio_playback.unwrap_or(false),
+                enable_audio_playback: matches!(self.audio_playback_mode, None | Some(AudioPlaybackMode::Client)),
+                audio_playback_mode: self.audio_playback_mode.map(Into::into),
                 enable_audio_capture: false,
-                play_audio_on_server: self.play_audio_on_server.unwrap_or(false),
                 request_data: None,
                 compression_type: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),

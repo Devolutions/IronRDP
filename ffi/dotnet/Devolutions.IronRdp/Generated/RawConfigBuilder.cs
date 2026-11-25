@@ -66,6 +66,9 @@ internal partial struct ConfigBuilder
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_set_autologon", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void SetAutologon(ConfigBuilder* handle, [MarshalAs(UnmanagedType.U1)] bool autologon);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_set_audio_playback_mode", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern void SetAudioPlaybackMode(ConfigBuilder* handle, AudioPlaybackMode mode);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_set_pointer_software_rendering", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void SetPointerSoftwareRendering(ConfigBuilder* handle, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering);
 

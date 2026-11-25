@@ -13,6 +13,26 @@ public partial class ConfigBuilder
 
     private static readonly unsafe RustDestructor<Raw.ConfigBuilder> _destroy = Raw.ConfigBuilder.Destroy;
 
+    public AudioPlaybackMode AudioPlaybackMode
+    {
+        set
+        {
+            unsafe
+            {
+                BorrowLease<Raw.ConfigBuilder>? selfLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                    Raw.ConfigBuilder.SetAudioPlaybackMode(selfLease!.Ptr, value);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                }
+            }
+        }
+    }
+
     public bool Autologon
     {
         set
