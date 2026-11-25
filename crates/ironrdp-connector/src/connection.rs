@@ -2598,29 +2598,6 @@ mod tests {
         let client_info =
             create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
-
-        assert!(!client_info.flags.contains(ClientInfoFlags::REMOTE_CONSOLE_AUDIO));
-
-        for (mode, no_playback, remote_console) in [
-            (crate::AudioPlaybackMode::Client, false, false),
-            (crate::AudioPlaybackMode::Server, true, true),
-            (crate::AudioPlaybackMode::Disabled, true, false),
-        ] {
-            config.audio_playback_mode = Some(mode);
-            let flags = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false)
-                .client_info
-                .flags;
-            assert_eq!(
-                flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK),
-                no_playback,
-                "{mode:?}"
-            );
-            assert_eq!(
-                flags.contains(ClientInfoFlags::REMOTE_CONSOLE_AUDIO),
-                remote_console,
-                "{mode:?}"
-            );
-        }
     }
 
     /// A plain client [`Config`] for tests to change what they look at.

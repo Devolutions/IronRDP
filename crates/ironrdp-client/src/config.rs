@@ -3045,10 +3045,7 @@ impl ConfigBuilder {
                 self.enable_audio_playback = Some(false);
                 self.audio_playback_mode = Some(audio_playback_mode(mode));
             }
-            Ok(Some(mode @ AudioMode::RedirectToClient)) => {
-                self.enable_audio_playback = Some(true);
-                self.audio_playback_mode = Some(audio_playback_mode(mode));
-            }
+            Ok(Some(AudioMode::RedirectToClient)) => self.enable_audio_playback = Some(true),
             _ => {}
         }
         #[cfg(feature = "sound")]
