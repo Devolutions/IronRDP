@@ -23,7 +23,7 @@ use tracing::{debug, trace, warn};
 use super::locks;
 use super::locks::{ByteRangeLocks, file_lock_conflict};
 pub(crate) use super::path::FileIdentity;
-use super::path::{InvalidPath, RelativePath, ResolvedRoot, Root, io_to_errno};
+use super::path::{InvalidPath, RelativePath, ResolvedRoot, Root, io_to_errno, names_no_directory};
 use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
 use super::wildcard::{contains_wildcards, is_name_in_expression};
 
@@ -127,18 +127,33 @@ struct DriveRoots {
 struct ConfiguredRoot {
     /// The path the root was configured with, which is only logged once it is resolved.
     path: String,
-    /// The directory the path named, or `None` when it named none.
+    /// The directory the path named, as far as its walk showed.
     ///
     /// A root that does not hold its directory open has one too, because the paths of the other roots are checked against it all the same.
-    identity: Option<FileIdentity>,
-    /// The directory the path named, opened through that path, or `None` when it named none or the root lies beyond the bound on roots held open.
+    identity: RootIdentity,
+    /// The directory the path named, opened through that path, or `None` when the walk failed or the root lies beyond the bound on roots held open.
     ///
     /// A refused root keeps its directory open too, because replacing the root that refuses it makes it usable again without resolving its path again.
     directory: Option<Root>,
     /// The directories whose entries decide what the path names, because a symbolic link was followed or a `..` step taken in or below them.
     deciding_directories: HashSet<FileIdentity>,
-    /// Whether one of `deciding_directories` is the directory of a configured root, so a server could have changed what the path names.
+    /// Whether a server could have changed what the path names.
+    ///
+    /// One of `deciding_directories` is the directory of a configured root, or `deciding_directories` is not empty while the directory of a configured root is undetermined.
     is_refused: bool,
+}
+
+/// The directory a root path names, as far as its walk showed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootIdentity {
+    /// The path named this directory.
+    Known(FileIdentity),
+    /// The walk showed that the path names no directory a drive could serve, as [`names_no_directory`] tells.
+    NoDirectory,
+    /// The walk failed without showing which directory the path names, or whether it names one.
+    ///
+    /// The directory may exist all the same, and an earlier backend built from the same configuration may have served it.
+    Undetermined,
 }
 
 impl DriveRoots {
@@ -210,6 +225,7 @@ impl DriveRoots {
     /// Records `walk`, the outcome of resolving `path`, as the root of `device_id`, and judges every root again.
     ///
     /// The outcome is given rather than taken here, so a test can give one that no path produces on demand.
+    /// A walk that failed leaves the root unusable, and its directory undetermined unless the failure shows that `path` names none, as [`names_no_directory`] tells.
     /// A root that resolved holds the directory `path` names open.
     /// The roots hold at most half of `max_open_files` directories open, so at least half the limit is left to open files however many roots are given.
     /// A root beyond that is recorded all the same, but holds nothing open and is unusable.
@@ -240,11 +256,26 @@ impl DriveRoots {
                     );
                 }
                 // A root that is not held is dropped here, which closes the last descriptor of its walk.
-                (Some(root.identity()), is_held.then_some(root), deciding_directories)
+                (
+                    RootIdentity::Known(root.identity()),
+                    is_held.then_some(root),
+                    deciding_directories,
+                )
             }
-            Err(error) => {
+            Err(error) if names_no_directory(error) => {
                 warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
-                (None, None, HashSet::new())
+                (RootIdentity::NoDirectory, None, HashSet::new())
+            }
+            // Any other failure says nothing of the path, which may name a directory that an earlier backend served.
+            // The other roots cannot be checked against a directory that is not known, so while this root is configured, each of them that followed a link or took a `..` step is refused.
+            Err(error) => {
+                warn!(
+                    %error,
+                    device_id,
+                    root = path,
+                    "Could not determine the directory of a drive root, so nothing is served from it or from a root whose path follows a symbolic link or steps back up"
+                );
+                (RootIdentity::Undetermined, None, HashSet::new())
             }
         };
         let root = ConfiguredRoot {
@@ -270,7 +301,18 @@ impl DriveRoots {
     /// A link read there, or a step back up from there, makes the end of the path depend on those entries, so the next time it is resolved it can lie anywhere.
     /// A root is therefore usable only if its path did nothing but descend once it was in or below a configured root.
     ///
+    /// The check needs the directory of every root a server may have been served.
+    /// While the directory of a configured root is undetermined, a link followed or a `..` step taken anywhere may lie in or below it.
+    /// Every root whose path did either is then refused too, wherever it did.
+    /// A root whose path only descended from `/` stays usable, because it ends in or below every directory it passed through, the undetermined one included.
+    ///
     /// Every root is judged again against all of them, refused ones included, so the outcome does not depend on the order the roots were given in.
+    ///
+    /// UNTESTED: a walk that fails because the process has run out of descriptors makes every root reached through a link or a `..` step unusable.
+    /// A root reached through a link that a server placed below the directory of the root whose walk failed would otherwise be served a directory outside every root.
+    /// The tests share one process, whose descriptors they cannot exhaust, so they give `record_root` the failure and never run the walk into it.
+    /// After changing the walk, how its outcome is recorded or this check, check by hand with roots `outer/a/b` and `outer` and a link `outer/d/b` to a directory outside both.
+    /// Rename `\a` away and `\d` to `\a` through the drive of `outer`, build a second backend while the process has two descriptors left, and check that a create through the drive of `outer/a/b` fails.
     ///
     /// UNTESTED: a link or a `..` step counts as lying below a root only when the directories walked from `/` to it include the directory of that root.
     /// A bind mount, or on macOS a firmlink such as `/Users` for `/System/Volumes/Data/Users`, shows a directory inside a root at another path.
@@ -281,25 +323,38 @@ impl DriveRoots {
     /// A link in a directory that another backend redirects under another configuration, before or beside this one, is followed like any link in local configuration, although the server of that backend can replace it.
     /// No test runs two configurations against one tree, so after changing which directories a link is checked against, check that a root path outside the roots of the backend is still resolved as the kernel resolves it.
     fn refuse_roots_a_server_could_redirect(&mut self) {
-        let directories = self
-            .shared
-            .iter()
-            .chain(self.drives.values())
-            .filter_map(|root| root.identity)
+        let configured = || self.shared.iter().chain(self.drives.values());
+        let directories = configured()
+            .filter_map(|root| match root.identity {
+                RootIdentity::Known(identity) => Some(identity),
+                RootIdentity::NoDirectory | RootIdentity::Undetermined => None,
+            })
             .collect::<HashSet<_>>();
+        let is_any_undetermined = configured().any(|root| root.identity == RootIdentity::Undetermined);
         let roots = self
             .shared
             .iter_mut()
             .map(|root| (None, root))
             .chain(self.drives.iter_mut().map(|(device_id, root)| (Some(*device_id), root)));
         for (device_id, root) in roots {
-            let is_refused = !root.deciding_directories.is_disjoint(&directories);
+            let is_redirectable = !root.deciding_directories.is_disjoint(&directories);
+            // A directory that is not known cannot be told from the ones in `deciding_directories`, so it counts as one of them.
+            let may_be_redirectable = is_any_undetermined && !root.deciding_directories.is_empty();
+            let is_refused = is_redirectable || may_be_redirectable;
             if is_refused && !root.is_refused {
-                warn!(
-                    device_id,
-                    root = root.path,
-                    "Refused a drive root whose path follows a symbolic link or steps back up inside a redirected directory, so nothing is served from it"
-                );
+                if is_redirectable {
+                    warn!(
+                        device_id,
+                        root = root.path,
+                        "Refused a drive root whose path follows a symbolic link or steps back up inside a redirected directory, so nothing is served from it"
+                    );
+                } else {
+                    warn!(
+                        device_id,
+                        root = root.path,
+                        "Refused a drive root whose path follows a symbolic link or steps back up while the directory of another root is not determined, so nothing is served from it"
+                    );
+                }
             }
             root.is_refused = is_refused;
         }
@@ -556,6 +611,7 @@ impl NixRdpdrBackend {
     /// The drive then serves that directory whatever becomes of its path.
     /// `root` must be an absolute path without `.` or `..` components, and may lead through symbolic links that lie outside every root of the backend.
     /// A `..` in the target of such a link must be taken outside every root as well.
+    /// A root reached through a link is unusable all the same while the directory of another root could not be determined.
     /// An unusable root, as [Drive roots on macOS and Linux](crate#drive-roots-on-macos-and-linux) defines it, is logged and leaves the drive configured but served nothing.
     /// Roots are checked against each other in whichever order they are given, so a root given later can make an earlier one unusable.
     /// A root given again for the same device replaces the earlier one.
@@ -2491,6 +2547,156 @@ mod tests {
         assert_eq!(through_the_enclosing_drive, NtStatus::UNSUCCESSFUL);
         // The root that took the place of the enclosing one is served.
         assert_eq!(through_the_drive_missing_at_first, NtStatus::SUCCESS);
+    }
+
+    /// The devices given a root whose walk failed, a root reached through a link, and a root whose path only descends.
+    const FAILED: u32 = 1;
+    const LINKED: u32 = 2;
+    const DESCENDING: u32 = 3;
+
+    /// A directory, a link to another directory that lies outside both, and a path for a root whose walk is given a failure.
+    struct RootsBesideAFailedWalk {
+        /// Removes the sandbox when dropped.
+        _roots: TwoRoots,
+        /// A path without a symbolic link, which names the first directory.
+        descending: String,
+        /// A path that names the second directory through a link in the sandbox.
+        linked: String,
+        /// The second directory, which `linked` names.
+        target: PathBuf,
+        /// A path below the sandbox, which the tests never resolve.
+        failed: String,
+    }
+
+    impl RootsBesideAFailedWalk {
+        fn new() -> Self {
+            let roots = TwoRoots::new();
+            // The temporary directory can lie behind a symbolic link, as `/var` is on macOS.
+            // A root given through it would itself be reached through a link, so every path here starts from the canonical one.
+            let sandbox = std::fs::canonicalize(&roots.sandbox).expect("canonical sandbox");
+            let (alias, target) = (sandbox.join("alias"), sandbox.join("second"));
+            std::os::unix::fs::symlink(&target, &alias).expect("link directory");
+            Self {
+                descending: utf8(&sandbox.join("first")),
+                linked: utf8(&alias),
+                target,
+                failed: utf8(&sandbox.join("failed")),
+                _roots: roots,
+            }
+        }
+
+        /// A backend without a shared directory, given the roots of `order` one after the other, the walk of `FAILED` having failed with `error`.
+        fn backend(&self, order: [u32; 3], error: Errno) -> NixRdpdrBackend {
+            order
+                .into_iter()
+                .fold(NixRdpdrBackend::default(), |mut backend, device_id| match device_id {
+                    FAILED => {
+                        backend
+                            .roots
+                            .record_root(backend.max_open_files, Some(FAILED), &self.failed, Err(error));
+                        backend
+                    }
+                    LINKED => backend.with_drive_root(LINKED, self.linked.clone()),
+                    _ => backend.with_drive_root(DESCENDING, self.descending.clone()),
+                })
+        }
+    }
+
+    /// Creates a file in the root of `device_id` as the channel does, returning the status of the Device Create Response.
+    fn create_file_in_the_root(backend: &mut NixRdpdrBackend, device_id: u32) -> NtStatus {
+        create_through_the_channel(
+            backend,
+            device_id,
+            r"\new.txt",
+            CreateDisposition::FILE_CREATE,
+            CreateOptions::empty(),
+        )
+        .0
+    }
+
+    /// A walk that fails for want of a descriptor leaves the directory of its root undetermined, and that directory may hold the link another root was reached through.
+    /// That root is therefore served nothing, wherever its link lies and in whichever order the roots are given.
+    // oracle: mutant a root reached through a link served while the directory of another root could not be determined
+    #[rstest]
+    #[case::the_failed_walk_first([FAILED, LINKED, DESCENDING])]
+    #[case::the_failed_walk_last([LINKED, DESCENDING, FAILED])]
+    fn a_root_reached_through_a_link_is_served_nothing_while_the_directory_of_another_root_is_undetermined(
+        #[case] order: [u32; 3],
+    ) {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = fixture.backend(order, Errno::EMFILE);
+
+        let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_linked_root, NtStatus::UNSUCCESSFUL);
+        assert_eq!(std::fs::read_dir(&fixture.target).expect("list directory").count(), 0);
+    }
+
+    /// A path that only descends ends in or below every directory it passes through, an undetermined one included, so its root is served.
+    // oracle: mutant every root refused while the directory of another root could not be determined
+    #[rstest]
+    #[case::the_failed_walk_first([FAILED, LINKED, DESCENDING])]
+    #[case::the_failed_walk_last([LINKED, DESCENDING, FAILED])]
+    fn a_root_whose_path_only_descends_is_served_while_the_directory_of_another_root_is_undetermined(
+        #[case] order: [u32; 3],
+    ) {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = fixture.backend(order, Errno::EMFILE);
+
+        let through_the_descending_root = create_file_in_the_root(&mut backend, DESCENDING);
+
+        assert_eq!(through_the_descending_root, NtStatus::SUCCESS);
+    }
+
+    /// The shared directory is a root like any other once a drive has a root of its own, so a failed walk of it leaves its directory undetermined too.
+    // oracle: mutant the shared directory left out of the roots whose directory has to be known
+    #[test]
+    fn a_root_reached_through_a_link_is_served_nothing_while_the_shared_directory_is_undetermined() {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = NixRdpdrBackend::new(fixture.failed.clone());
+        backend
+            .roots
+            .record_root(backend.max_open_files, None, &fixture.failed, Err(Errno::EMFILE));
+        let mut backend = backend.with_drive_root(LINKED, fixture.linked.clone());
+
+        let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_linked_root, NtStatus::UNSUCCESSFUL);
+        assert_eq!(std::fs::read_dir(&fixture.target).expect("list directory").count(), 0);
+    }
+
+    /// A root given again replaces the one whose walk failed, so the directory of every root is known and the root reached through a link is served again.
+    // oracle: mutant a root reached through a link kept unusable after the root whose directory was undetermined is replaced
+    #[test]
+    fn a_root_reached_through_a_link_is_served_once_the_root_with_an_undetermined_directory_is_replaced() {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = fixture
+            .backend([FAILED, LINKED, DESCENDING], Errno::EMFILE)
+            .with_drive_root(FAILED, fixture.descending.clone());
+
+        let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
+
+        assert_eq!(through_the_linked_root, NtStatus::SUCCESS);
+    }
+
+    /// A walk that shows its path names no directory leaves no directory undetermined, so a root reached through a link outside every root is served beside it.
+    // oracle: mutant a path that names no directory counted as a directory that could not be determined
+    #[rstest]
+    #[case::missing(Errno::ENOENT)]
+    #[case::not_a_directory(Errno::ENOTDIR)]
+    #[case::too_many_links(Errno::ELOOP)]
+    #[case::malformed(Errno::EINVAL)]
+    #[case::too_many_components(Errno::ENAMETOOLONG)]
+    #[case::no_permission(Errno::EACCES)]
+    fn a_root_reached_through_a_link_is_served_beside_a_root_whose_path_names_no_directory(#[case] error: Errno) {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = fixture.backend([FAILED, LINKED, DESCENDING], error);
+
+        let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
+
+        assert_eq!(through_the_linked_root, NtStatus::SUCCESS);
     }
 
     /// However many roots are given, they leave half the places under the limit to open files.

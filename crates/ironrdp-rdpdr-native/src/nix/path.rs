@@ -97,7 +97,7 @@ impl Root {
     /// It is walked one component at a time from `/`, and a symbolic link is read and followed here rather than by the kernel, so the directory holding it is known.
     /// A relative target continues from that directory, an absolute one starts again at `/`, and a `..` in a target leads to the parent of the directory reached, as when the kernel resolves the path.
     /// At most `MAX_LINKS` links are followed and `MAX_COMPONENTS` components walked, so a tree built for it cannot make the walk run long.
-    /// Any failure makes the path name no directory: none is retried another way.
+    /// No failure is retried another way, and [`names_no_directory`] tells whether one shows that the path names no directory.
     ///
     /// A path that only descends from a directory ends at or below it, whatever the entries of that directory and of those below it are.
     /// A link read in a directory, or a step back up from it, makes the end of the path depend on those entries, and it can then lie anywhere.
@@ -245,6 +245,27 @@ impl Root {
         }
         Ok(file)
     }
+}
+
+/// Whether `error`, with which [`Root::resolve`] failed, shows that the path names no directory a drive could serve.
+///
+/// The errors listed are those of a path that is missing, is not a directory, loops or exceeds the bounds of the walk, is malformed, or may not be searched or read.
+/// A server cannot bring one about for a root that lies in no other root of its backend, because it can change nothing on the path of such a root.
+/// For a root that lies in another root it can, but whatever it changed through either then lies in or below the directory of the enclosing root, which the other roots are checked against.
+/// Either way, no directory that a server was served goes unchecked because the path now names none.
+///
+/// Any other error says nothing of the path: the process ran out of descriptors or memory, the filesystem failed, or a directory moved during the walk.
+/// The path may then name a directory that an earlier backend built from the same configuration served, and nothing shows which.
+/// The errors of the first kind are listed rather than those of the second, so an error that nobody foresaw leaves the directory undetermined.
+///
+/// UNTESTED: an error that is not listed leaves the directory undetermined.
+/// The backend then refuses every root reached through a symbolic link or a `..` step, and would otherwise serve one reached through a link below the directory it does not know.
+/// The tests try a sample of such errors, not every errno of every platform, so after changing the list, check that it names only errors that show the path names no directory and that every other error still falls outside it.
+pub(crate) fn names_no_directory(error: Errno) -> bool {
+    matches!(
+        error,
+        Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP | Errno::EINVAL | Errno::ENAMETOOLONG | Errno::EACCES
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -495,5 +516,29 @@ mod tests {
     #[case::invalid_directory_name(r"\a*b\*")]
     fn rejects_invalid_query_paths(#[case] path: &str) {
         assert_eq!(RelativePath::parse_query(path), Err(InvalidPath));
+    }
+
+    // oracle: mutant an error that shows the path names no directory left out of the list
+    #[rstest]
+    #[case::missing(Errno::ENOENT)]
+    #[case::not_a_directory(Errno::ENOTDIR)]
+    #[case::too_many_links(Errno::ELOOP)]
+    #[case::malformed(Errno::EINVAL)]
+    #[case::too_many_components(Errno::ENAMETOOLONG)]
+    #[case::no_permission(Errno::EACCES)]
+    fn an_error_of_the_path_itself_shows_that_it_names_no_directory(#[case] error: Errno) {
+        assert!(names_no_directory(error));
+    }
+
+    // oracle: mutant an error that says nothing of the path taken to show that it names no directory
+    #[rstest]
+    #[case::no_descriptor_left_to_the_process(Errno::EMFILE)]
+    #[case::no_descriptor_left_to_the_system(Errno::ENFILE)]
+    #[case::out_of_memory(Errno::ENOMEM)]
+    #[case::input_output_error(Errno::EIO)]
+    #[case::directory_moved_during_the_walk(Errno::ESTALE)]
+    #[case::bad_descriptor(Errno::EBADF)]
+    fn an_error_that_says_nothing_of_the_path_does_not_show_that_it_names_no_directory(#[case] error: Errno) {
+        assert!(!names_no_directory(error));
     }
 }
