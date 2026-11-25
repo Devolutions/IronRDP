@@ -357,10 +357,11 @@ impl<'de> Decode<'de> for ShareControlHeader {
             .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type", in: src))?;
         let pdu_version = pdu_type_with_version & !SHARE_CONTROL_HEADER_MASK;
         // The Enhanced Security Server Redirection PDU sets PDUVersion to zero and carries no shareId
-        // (MS-RDPBCGR 2.2.13.3.1).
+        // (MS-RDPBCGR 2.2.13.3.1). FreeRDP servers, GNOME Remote Desktop among them, set the protocol
+        // version on it as on every other Share Control Header, so both values are accepted.
         let is_redirection = pdu_type == ShareControlPduType::ServerRedirect;
-        let expected_version = if is_redirection { 0 } else { PROTOCOL_VERSION };
-        if pdu_version != expected_version {
+        let is_valid_version = pdu_version == PROTOCOL_VERSION || (is_redirection && pdu_version == 0);
+        if !is_valid_version {
             return Err(invalid_field_err!("pdu_version", "invalid PDU version", in: src));
         }
 

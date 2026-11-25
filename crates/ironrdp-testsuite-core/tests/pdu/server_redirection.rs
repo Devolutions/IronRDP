@@ -73,6 +73,22 @@ fn encodes_the_annotated_enhanced_security_server_redirection_pdu() {
     assert_eq!(encode_vec(&header).unwrap(), expected);
 }
 
+// oracle: reference FreeRDP/FreeRDP@0ce68ddd1cd6:libfreerdp/core/rdp.c
+// `rdp_send_pdu` writes every Share Control Header through `rdp_write_share_control_header`, which sets the protocol
+// version in `pduType` (`type | 0x10`), the redirection sent by `redirection.c` included. GNOME Remote Desktop
+// redirects with such a header when it hands a client over to another session.
+#[test]
+fn enhanced_security_server_redirection_with_the_protocol_version_set_is_decoded() {
+    let mut user_data = ANNOTATED_PDU[USER_DATA_OFFSET..].to_vec();
+    // pduType: PDUTYPE_SERVER_REDIR_PKT (0xA) with PDUVersion 1.
+    user_data[2..4].copy_from_slice(&0x001Au16.to_le_bytes());
+
+    assert_eq!(
+        decode_server_redirection(&user_data).unwrap(),
+        Some(annotated_redirection())
+    );
+}
+
 // oracle: spec MS-RDPBCGR §2.2.13.2.1
 // A Basic Security Header carrying SEC_REDIRECTION_PKT (0x0400) with flagsHi zero, then the Server Redirection Packet
 // whose Flags field is SEC_REDIRECTION_PKT as well.
