@@ -2156,11 +2156,11 @@ async fn connect(
     .await?
     .into_connected()?;
 
-    // The server may send its first session PDUs right behind the last connection PDU, and a
-    // proxy can deliver them in the same WebSocket message. Those bytes are already buffered
-    // here; dropping them leaves the server waiting for replies that never come.
-    // UNTESTED: this leftover must seed the session's framed reader in `run`. No test drives
-    // `connect` and `run` over a WebSocket; keep the two in step when changing this hand-off.
+    // The server may send its first session PDUs right behind the last connection PDU.
+    // A proxy can deliver them in the same WebSocket message, so they may already be buffered here.
+    // Dropping them leaves the server waiting for replies that never come.
+    // UNTESTED: No test drives `connect` over a WebSocket, so nothing checks that this leftover reaches `run`.
+    // `monitor_layout_tests` covers the other half, where `run` reads a leftover before the socket.
     let (ws, leftover) = framed.into_inner();
 
     Ok((connection_result, ws, leftover))
