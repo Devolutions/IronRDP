@@ -833,7 +833,7 @@ fn rename_through_another_spelling_onto_another_link_removes_the_source() {
     assert_eq!(stored_names(&fixture.share), ["q.txt"]);
 }
 
-/// Another spelling of another link of the file names that link, so the source goes.
+/// Another spelling of another link of the file names that link, so the source goes and the link that stays takes that spelling.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[cfg(target_os = "macos")]
 #[test]
@@ -851,11 +851,7 @@ fn rename_onto_another_spelling_of_another_link_removes_the_source() {
     let response = set_information(&mut backend, file_id, rename_to(r"\Q.TXT", false));
 
     assert_eq!(response_status(&response), NtStatus::SUCCESS);
-    assert!(!fixture.share.join("ab.txt").exists());
-    assert_eq!(
-        std::fs::read(fixture.share.join("Q.TXT")).expect("read Q.TXT"),
-        b"linked"
-    );
+    assert_eq!(stored_names(&fixture.share), ["Q.TXT"]);
 }
 
 /// A rename onto another link of the file frees the source name, so a file that takes it shares nothing with the renamed one, whatever spelling its handles were opened under.

@@ -1001,7 +1001,7 @@ pub(crate) fn set_information(
 /// A directory `to`, or one with open handles, is never replaced, and one marked for deletion fails with STATUS_DELETE_PENDING.
 /// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision, and a `to` naming another hard link of the source removes the source link.
 /// In one directory the two are told apart by the names their entries are stored under, and both links stay where a stored name cannot be told, as for another spelling in a case-insensitive directory on Linux.
-/// The link that stays keeps the spelling it is stored under.
+/// The link that stays takes the spelling of `to` where its stored name can be told.
 /// A source name kept that way still names the file, so a later create of that name opens or overwrites it.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
 /// The target directory is opened as a create opens it, so a path through a directory marked for deletion is refused with STATUS_DELETE_PENDING.
@@ -1049,6 +1049,13 @@ fn rename(
                             matches!((from_stored, to_stored), (Some(from_stored), Some(to_stored)) if from_stored != to_stored)
                         });
             if is_another_link {
+                // [MS-FSA] names the link that stays as `to` spells it.
+                if let Some(to_stored) = stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?
+                    && to_stored != to_name.as_bytes()
+                {
+                    renameat(to_parent.as_fd(), to_stored.as_slice(), to_parent.as_fd(), to_name)
+                        .map_err(status_from_errno)?;
+                }
                 unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
                 return Ok(to_ancestors);
             }
@@ -1069,20 +1076,25 @@ fn rename(
 /// The name under which `directory` stores the entry that `name` resolves to, or `None` where that cannot be told.
 ///
 /// A case- or normalization-insensitive filesystem resolves spellings other than the stored one.
-/// macOS reports the name of the entry a lookup found, and elsewhere, or on a volume that does not, the stored name is known only when it is `name` itself.
+/// A name the directory lists is the stored one, and for any other, macOS reports the name of the entry a lookup found.
 fn stored_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Option<Vec<u8>>> {
+    if contains_entry(directory, name.as_bytes())? {
+        return Ok(Some(name.as_bytes().to_vec()));
+    }
+    // UNTESTED: a reported name counts only when it is `name` up to case and the directory lists it, and `rename` removes no link for a name that is unknown.
+    // A report that names another link of the file, or repeats the spelling asked for, would otherwise make two spellings of one entry look like two links, and the rename would remove that entry.
+    // On the volumes the tests run on, every report names the entry looked up, so after changing either, check that such a report yields `None` and that `rename` then keeps both links.
     #[cfg(target_os = "macos")]
-    let reported = looked_up_name(directory, name)?;
-    #[cfg(not(target_os = "macos"))]
-    let reported = None;
-    let name = reported.unwrap_or_else(|| name.as_bytes().to_vec());
-    // UNTESTED: a name counts as stored only when the directory lists an entry under exactly that name, and `rename` removes no link for a name that does not.
-    // A filesystem that reports the spelling it was asked for, or a case-insensitive directory on Linux, would otherwise make two spellings of one entry look like two links, and the rename would remove that entry.
-    // The tests run where every name that reaches this check is listed, so after changing either, check that a name the listing lacks yields `None` and that `rename` then keeps both links.
-    Ok(contains_entry(directory, &name)?.then_some(name))
+    if let Some(reported) = looked_up_name(directory, name)?
+        && core::str::from_utf8(&reported).is_ok_and(|reported| reported.to_lowercase() == name.to_lowercase())
+        && contains_entry(directory, &reported)?
+    {
+        return Ok(Some(reported));
+    }
+    Ok(None)
 }
 
-/// The name of the entry that `name` resolves to in `directory`, as the filesystem reports it, or `None` on a volume that does not report names.
+/// The name of the entry that `name` resolves to in `directory`, as the filesystem reports it, or `None` where it reports none.
 #[cfg(target_os = "macos")]
 fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Option<Vec<u8>>> {
     use std::ffi::CString;
@@ -1118,8 +1130,8 @@ fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Option<V
     };
     match Errno::result(result) {
         Ok(_) => {}
-        // UNTESTED: a volume that does not answer the query is no error, and the name is then looked for in the listing as given.
-        // Failing here would refuse every rename onto a name of the same file on such a volume, where listing and renaming work.
+        // UNTESTED: a volume that does not answer the query is no error, and the stored name is then unknown.
+        // Failing here would refuse every rename onto another spelling of a name of the same file on such a volume, where listing and renaming work.
         // No volume the tests run on refuses the query, so after changing this, check that these two errors yield `None` and every other error is returned.
         Err(Errno::ENOTSUP | Errno::EOPNOTSUPP) => return Ok(None),
         Err(error) => return Err(error),
@@ -1132,7 +1144,7 @@ fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Option<V
         let start = REFERENCE.checked_add(offset)?;
         buffer.get(start..start.checked_add(length)?.checked_sub(1)?)
     })();
-    stored.map(|stored| Some(stored.to_vec())).ok_or(Errno::ENAMETOOLONG)
+    Ok(stored.map(<[u8]>::to_vec))
 }
 
 /// Whether `directory` holds an entry stored under exactly the bytes of `name`, whatever spellings the filesystem treats as equal.
