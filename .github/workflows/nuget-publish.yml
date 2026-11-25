@@ -211,6 +211,7 @@ jobs:
 
           if ($DotNetOs -eq 'win') {
             $Env:RUSTFLAGS="-C target-feature=+crt-static"
+            $Env:CMAKE_TOOLCHAIN_FILE = Join-Path $PWD 'ffi/cmake/opus-static-runtime.cmake'
           }
 
           $ProjectVersion = '${{ needs.preflight.outputs.project-version }}'

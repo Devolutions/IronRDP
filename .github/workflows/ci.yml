@@ -322,6 +322,29 @@ jobs:
       - name: Run .NET smoke tests
         run: dotnet run --project ffi/dotnet/Devolutions.IronRdp.Tests -c Release --no-build
 
+  ffi-windows-production:
+    name: FFI Windows production [${{ matrix.target }}]
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install native build dependencies
+        uses: ./.github/actions/install-build-deps
+
+      - name: Build native library with static CRT
+        shell: pwsh
+        run: |
+          rustup target add ${{ matrix.target }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $Env:RUSTFLAGS = '-C target-feature=+crt-static'
+          $Env:CMAKE_TOOLCHAIN_FILE = Join-Path $PWD 'ffi/cmake/opus-static-runtime.cmake'
+          cargo build -p ffi --profile production-ffi --target ${{ matrix.target }} --locked
+
   feature-matrix-setup:
     name: feature matrix setup
     runs-on: ubuntu-latest
@@ -386,7 +409,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, ffi-bindings-check, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, ffi-bindings-check, ffi-windows-production, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:
