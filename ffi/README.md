@@ -65,6 +65,7 @@ Set `readOnly` to reject remote writes to that drive.
 Drive selection changes require a new connector and connection.
 Replace the example paths and credentials with values for your session.
 The connector advertises a silent RDPSND channel for RDPDR compatibility; it does not play audio.
+By default, the compatibility channel does not request audio redirection.
 Attach native audio separately if playback is needed.
 
 ```csharp

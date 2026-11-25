@@ -7,11 +7,26 @@ pub mod state;
 pub(crate) struct RdpdrConfiguration {
     drives: Vec<config::RedirectedDriveConfig>,
     smartcard: bool,
+    no_audio_playback: Option<bool>,
     /// INVARIANT: This is true only while the automatically installed silent RDPSND channel is present.
     compatibility_rdpsnd: bool,
 }
 
-fn attach_rdpdr_compatibility_rdpsnd(connector: &mut ironrdp::connector::ClientConnector) {
+fn attach_rdpdr_compatibility_rdpsnd(
+    connector: &mut ironrdp::connector::ClientConnector,
+    no_audio_playback: Option<bool>,
+) {
+    let playback_dvc = connector
+        .static_channels
+        .get_by_type::<ironrdp::dvc::DrdynvcClient>()
+        .and_then(|channel| channel.channel_processor_downcast_ref::<ironrdp::dvc::DrdynvcClient>())
+        .is_some_and(|drdynvc| {
+            crate::audio::AudioChannelKind::Playback
+                .channel_names()
+                .iter()
+                .any(|name| drdynvc.has_channel_name(name))
+        });
+    connector.config.enable_audio_playback = no_audio_playback == Some(false) || playback_dvc;
     // Windows servers require RDPSND to communicate on RDPDR (MS-RDPEFS Appendix A note 1).
     connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(
         ironrdp::rdpsnd::client::NoopRdpsndBackend,
@@ -129,6 +144,7 @@ pub mod ffi {
                 None,
                 super::RdpdrConfiguration {
                     drives: config.redirected_drives.clone(),
+                    no_audio_playback: config.no_audio_playback,
                     ..Default::default()
                 },
             );
@@ -141,7 +157,7 @@ pub mod ffi {
                     .as_mut()
                     .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
                 connector.attach_static_channel(rdpdr);
-                super::attach_rdpdr_compatibility_rdpsnd(connector);
+                super::attach_rdpdr_compatibility_rdpsnd(connector, client.2.no_audio_playback);
                 client.2.compatibility_rdpsnd = true;
             }
 
@@ -211,6 +227,7 @@ pub mod ffi {
                 return Err("native audio must be attached before connecting".into());
             }
             audio.0.attach(connector, self.2.compatibility_rdpsnd)?;
+            connector.config.enable_audio_playback |= self.2.no_audio_playback == Some(false);
             if audio.0.has_playback() {
                 self.2.compatibility_rdpsnd = false;
             }
@@ -276,7 +293,7 @@ pub mod ffi {
                 .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
             connector.attach_static_channel(rdpdr);
             if !existing_rdpsnd {
-                super::attach_rdpdr_compatibility_rdpsnd(connector);
+                super::attach_rdpdr_compatibility_rdpsnd(connector, self.2.no_audio_playback);
                 self.2.compatibility_rdpsnd = true;
             }
             self.2.smartcard = true;
@@ -654,10 +671,21 @@ mod tests {
         NativeAudio::new(false, true, "", "", 0).map_err(|_| "audio settings")
     }
 
+    fn default_connector() -> Result<Box<ClientConnector>, &'static str> {
+        let mut builder = ConfigBuilder::new();
+        builder.with_username_and_password("user", "password");
+        builder.set_desktop_size(768, 1024);
+        builder.set_client_name("client");
+        builder.set_client_dir("C:\\");
+        builder.set_performance_flags(&PerformanceFlags::new_default());
+        let config = builder.build().map_err(|_| "config")?;
+        ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")
+    }
+
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195142
     #[test]
     fn smartcard_compatibility_channel_preserves_playback_setting() -> Result<(), &'static str> {
-        for (setting, expected) in [(None, true), (Some(false), true), (Some(true), false)] {
+        for (setting, expected) in [(None, false), (Some(false), true), (Some(true), false)] {
             let mut builder = ConfigBuilder::new();
             builder.with_username_and_password("user", "password");
             builder.set_desktop_size(768, 1024);
@@ -678,6 +706,200 @@ mod tests {
         Ok(())
     }
 
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195142
+    #[test]
+    fn capture_preserves_explicit_playback_before_and_after_smartcard() -> Result<(), &'static str> {
+        for capture_first in [false, true] {
+            let mut builder = ConfigBuilder::new();
+            builder.with_username_and_password("user", "password");
+            builder.set_desktop_size(768, 1024);
+            builder.set_client_name("client");
+            builder.set_client_dir("C:\\");
+            builder.set_performance_flags(&PerformanceFlags::new_default());
+            builder.no_audio_playback = Some(false);
+            let config = builder.build().map_err(|_| "config")?;
+            let mut connector = ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")?;
+            let audio = capture_audio()?;
+            if capture_first {
+                connector.with_native_audio(&audio).map_err(|_| "capture")?;
+            }
+            connector
+                .with_static_channel_rdpdr("client", 42)
+                .map_err(|_| "smartcard")?;
+            if !capture_first {
+                connector.with_native_audio(&audio).map_err(|_| "capture")?;
+            }
+            assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        }
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195142
+    #[test]
+    fn smartcard_and_static_playback_preserve_playback_in_both_orders() -> Result<(), &'static str> {
+        for playback_first in [false, true] {
+            let mut connector = default_connector()?;
+            if playback_first {
+                connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+            }
+            connector
+                .with_static_channel_rdpdr("client", 42)
+                .map_err(|_| "smartcard")?;
+            if !playback_first {
+                connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+            }
+            assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        }
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195142
+    #[test]
+    fn smartcard_and_dynamic_playback_preserve_playback_in_both_orders() -> Result<(), &'static str> {
+        for playback_first in [false, true] {
+            let mut connector = default_connector()?;
+            if playback_first {
+                assert!(attach_direct(
+                    &mut connector,
+                    ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+                )?);
+            }
+            connector
+                .with_static_channel_rdpdr("client", 42)
+                .map_err(|_| "smartcard")?;
+            if !playback_first {
+                assert!(attach_direct(
+                    &mut connector,
+                    ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+                )?);
+            }
+            assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        }
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195142
+    #[test]
+    fn smartcard_and_playback_proxy_preserve_playback_in_both_orders() -> Result<(), &'static str> {
+        for playback_first in [false, true] {
+            let mut connector = default_connector()?;
+            if playback_first {
+                assert!(attach_pipe_proxy(
+                    &mut connector,
+                    ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+                ));
+            }
+            connector
+                .with_static_channel_rdpdr("client", 42)
+                .map_err(|_| "smartcard")?;
+            if !playback_first {
+                assert!(attach_pipe_proxy(
+                    &mut connector,
+                    ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+                ));
+            }
+            assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        }
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195142
+    #[test]
+    fn smartcard_and_native_playback_preserve_playback_in_both_orders() -> Result<(), &'static str> {
+        for playback_first in [false, true] {
+            let mut connector = default_connector()?;
+            let audio = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio")?;
+            if playback_first {
+                connector.with_native_audio(&audio).map_err(|_| "native audio")?;
+            }
+            connector
+                .with_static_channel_rdpdr("client", 42)
+                .map_err(|_| "smartcard")?;
+            if !playback_first {
+                connector.with_native_audio(&audio).map_err(|_| "native audio")?;
+            }
+            assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195142
+    #[test]
+    fn drive_compatibility_channel_allows_later_playback() -> Result<(), &'static str> {
+        let root = std::env::current_dir().map_err(|_| "current directory")?;
+        let root = root.to_string_lossy();
+        let mut builder = ConfigBuilder::new();
+        builder.with_username_and_password("user", "password");
+        builder.set_desktop_size(768, 1024);
+        builder.set_client_name("client");
+        builder.set_client_dir("C:\\");
+        builder.set_performance_flags(&PerformanceFlags::new_default());
+        builder
+            .add_redirected_drive("Shared", &root, true)
+            .map_err(|_| "drive")?;
+        let config = builder.build().map_err(|_| "config")?;
+
+        let mut static_connector = ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")?;
+        assert!(
+            !static_connector
+                .0
+                .as_ref()
+                .ok_or("connector")?
+                .config
+                .enable_audio_playback
+        );
+        static_connector
+            .with_static_channel_rdp_snd()
+            .map_err(|_| "static playback")?;
+        assert!(
+            static_connector
+                .0
+                .as_ref()
+                .ok_or("connector")?
+                .config
+                .enable_audio_playback
+        );
+
+        let mut dynamic_connector = ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")?;
+        assert!(attach_direct(
+            &mut dynamic_connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        )?);
+        assert!(
+            dynamic_connector
+                .0
+                .as_ref()
+                .ok_or("connector")?
+                .config
+                .enable_audio_playback
+        );
+
+        let mut native_connector = ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")?;
+        let audio = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio")?;
+        native_connector.with_native_audio(&audio).map_err(|_| "native audio")?;
+        assert!(
+            native_connector
+                .0
+                .as_ref()
+                .ok_or("connector")?
+                .config
+                .enable_audio_playback
+        );
+        builder.no_audio_playback = Some(false);
+        let explicit = builder.build().map_err(|_| "config")?;
+        let explicit_connector = ClientConnector::new(&explicit, "127.0.0.1:0").map_err(|_| "connector")?;
+        assert!(
+            explicit_connector
+                .0
+                .as_ref()
+                .ok_or("connector")?
+                .config
+                .enable_audio_playback
+        );
+        Ok(())
+    }
+
     fn rdpdr_channel_ptr(connector: &ClientConnector) -> Result<*const ironrdp::rdpdr::Rdpdr, &'static str> {
         connector
             .0
@@ -691,24 +913,24 @@ mod tests {
     #[cfg(windows)]
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195247
     #[test]
-    fn configured_drives_survive_smartcard_then_audio() -> Result<(), Box<dyn std::error::Error>> {
+    fn configured_drives_survive_smartcard_then_audio() -> Result<(), Box<dyn core::error::Error>> {
         assert_drives_survive_attachments(false)
     }
 
     #[cfg(windows)]
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195247
     #[test]
-    fn configured_drives_survive_audio_then_smartcard() -> Result<(), Box<dyn std::error::Error>> {
+    fn configured_drives_survive_audio_then_smartcard() -> Result<(), Box<dyn core::error::Error>> {
         assert_drives_survive_attachments(true)
     }
 
     #[cfg(windows)]
-    fn assert_drives_survive_attachments(audio_first: bool) -> Result<(), Box<dyn std::error::Error>> {
+    fn assert_drives_survive_attachments(audio_first: bool) -> Result<(), Box<dyn core::error::Error>> {
         use ironrdp::rdpdr::pdu::RdpdrPdu;
         use ironrdp::rdpdr::pdu::efs::{
             CreateDisposition, CreateOptions, DesiredAccess, DeviceCreateRequest, DeviceIoRequest, DeviceIoResponse,
-            DeviceWriteRequest, FileAttributes, MajorFunction, MinorFunction, NtStatus, SharedAccess, VersionAndIdPdu,
-            VersionAndIdPduKind,
+            DeviceWriteRequest, FileAttributes, MajorFunction, MinorFunction, NtStatus, ServerDeviceAnnounceResponse,
+            SharedAccess, VersionAndIdPdu, VersionAndIdPduKind,
         };
         use ironrdp::svc::SvcProcessor as _;
         use ironrdp_core::{ReadCursor, WriteCursor, decode, encode_vec};
@@ -779,6 +1001,13 @@ mod tests {
         }
         assert!(drives.contains(&(1, b"ReadOnly\0".to_vec())));
         assert!(drives.contains(&(2, b"Writable\0".to_vec())));
+        for device_id in [1, 2] {
+            let response = RdpdrPdu::ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse {
+                device_id,
+                result_code: NtStatus::SUCCESS,
+            });
+            rdpdr.process(&encode_vec(&response)?)?;
+        }
 
         let request_header = |device_id, file_id, major_function| DeviceIoRequest {
             device_id,

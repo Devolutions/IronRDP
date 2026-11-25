@@ -72,6 +72,7 @@ pub mod ffi {
         pub(crate) dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
         pub(crate) direct_dvc: Option<DirectDvcConfig>,
         pub(crate) redirected_drives: Vec<super::RedirectedDriveConfig>,
+        pub(crate) no_audio_playback: Option<bool>,
     }
 
     impl Config {
@@ -414,6 +415,7 @@ pub mod ffi {
                 dvc_pipe_proxy,
                 direct_dvc,
                 redirected_drives: self.redirected_drives.clone(),
+                no_audio_playback: self.no_audio_playback,
             }))
         }
     }
