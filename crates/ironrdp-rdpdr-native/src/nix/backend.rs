@@ -1001,6 +1001,7 @@ pub(crate) fn set_information(
 /// A directory `to`, or one with open handles, is never replaced, and one marked for deletion fails with STATUS_DELETE_PENDING.
 /// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision, and a `to` naming another hard link of the source removes the source link.
 /// In one directory the source link is removed only when the handle's name and `to` are both spelled as their entries are stored, and otherwise both links stay.
+/// A source name kept that way still names the file, so a later create of that name opens or overwrites it.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
 /// The target directory is opened as a create opens it, so a path through a directory marked for deletion is refused with STATUS_DELETE_PENDING.
 ///
