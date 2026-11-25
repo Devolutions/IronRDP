@@ -2385,6 +2385,10 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::AUDIO_CAPTURE;
     }
 
+    if config.play_audio_on_server {
+        flags |= ClientInfoFlags::REMOTE_CONSOLE_AUDIO;
+    }
+
     if config.remote_application_mode {
         flags |= ClientInfoFlags::RAIL;
     }
@@ -2508,6 +2512,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
+            play_audio_on_server: false,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2571,6 +2576,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: true,
             enable_audio_capture: true,
+            play_audio_on_server: false,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2591,6 +2597,12 @@ mod tests {
         let client_info =
             create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
+
+        assert!(!client_info.flags.contains(ClientInfoFlags::REMOTE_CONSOLE_AUDIO));
+        config.play_audio_on_server = true;
+        let client_info =
+            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
+        assert!(client_info.flags.contains(ClientInfoFlags::REMOTE_CONSOLE_AUDIO));
     }
 
     /// A plain client [`Config`] for tests to change what they look at.
@@ -2636,6 +2648,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
+            play_audio_on_server: false,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2743,6 +2756,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
+            play_audio_on_server: false,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),

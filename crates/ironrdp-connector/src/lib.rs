@@ -342,6 +342,10 @@ pub struct Config {
     /// If true, client microphone capture is enabled and `INFO_AUDIOCAPTURE` is set
     /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
     pub enable_audio_capture: bool,
+    /// If true, the server is asked to play audio on its own console and `INFO_REMOTECONSOLEAUDIO`
+    /// is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu), so nothing is redirected
+    /// to the client. Meant for use without client audio playback.
+    pub play_audio_on_server: bool,
     pub performance_flags: PerformanceFlags,
 
     pub license_cache: Option<Arc<dyn LicenseCache>>,

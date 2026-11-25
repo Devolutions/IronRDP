@@ -4634,6 +4634,7 @@ pub(super) fn default_client_config() -> connector::Config {
         autologon: false,
         enable_audio_playback: true,
         enable_audio_capture: false,
+        play_audio_on_server: false,
         license_cache: None,
         compression_type: None,
         enable_server_pointer: true,
