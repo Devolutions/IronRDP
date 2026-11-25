@@ -3,6 +3,21 @@ pub mod config;
 pub mod result;
 pub mod state;
 
+#[derive(Default)]
+pub(crate) struct RdpdrConfiguration {
+    drives: Vec<config::RedirectedDriveConfig>,
+    smartcard: bool,
+    /// INVARIANT: This is true only while the automatically installed silent RDPSND channel is present.
+    compatibility_rdpsnd: bool,
+}
+
+fn attach_rdpdr_compatibility_rdpsnd(connector: &mut ironrdp::connector::ClientConnector) {
+    // Windows servers require RDPSND to communicate on RDPDR (MS-RDPEFS Appendix A note 1).
+    connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(
+        ironrdp::rdpsnd::client::NoopRdpsndBackend,
+    )));
+}
+
 #[diplomat::bridge]
 pub mod ffi {
     use core::fmt::Write as _;
@@ -35,8 +50,7 @@ pub mod ffi {
     pub struct ClientConnector(
         pub(crate) Option<ironrdp::connector::ClientConnector>,
         pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
-        pub(crate) Vec<super::config::RedirectedDriveConfig>,
-        pub(crate) bool,
+        pub(crate) super::RdpdrConfiguration,
     );
 
     // Basic Impl for ClientConnector
@@ -54,6 +68,7 @@ pub mod ffi {
             {
                 let drives = self
                     .2
+                    .drives
                     .iter()
                     .map(|drive| {
                         ironrdp_rdpdr_native::RedirectedDrive::new(
@@ -93,7 +108,7 @@ pub mod ffi {
             }
             #[cfg(not(windows))]
             {
-                if !self.2.is_empty() {
+                if !self.2.drives.is_empty() {
                     return Err("drive redirection is supported only on Windows".into());
                 }
                 let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(ironrdp::rdpdr::NoopRdpdrBackend);
@@ -109,14 +124,23 @@ pub mod ffi {
             let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
 
             let connector = ironrdp::connector::ClientConnector::new(config.connector.clone(), client_addr);
-            let mut client = ClientConnector(Some(connector), None, config.redirected_drives.clone(), false);
-            if !client.2.is_empty() {
+            let mut client = ClientConnector(
+                Some(connector),
+                None,
+                super::RdpdrConfiguration {
+                    drives: config.redirected_drives.clone(),
+                    ..Default::default()
+                },
+            );
+            if !client.2.drives.is_empty() {
                 let rdpdr = client.create_rdpdr(&config.connector.client_name, None)?;
-                client
+                let connector = client
                     .0
                     .as_mut()
-                    .ok_or_else(|| ValueConsumedError::for_item("connector"))?
-                    .attach_static_channel(rdpdr);
+                    .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
+                connector.attach_static_channel(rdpdr);
+                super::attach_rdpdr_compatibility_rdpsnd(connector);
+                client.2.compatibility_rdpsnd = true;
             }
 
             Ok(Box::new(client))
@@ -132,13 +156,33 @@ pub mod ffi {
             if self.1.as_ref().is_some_and(|audio| audio.has_playback()) {
                 return Err("native playback is already attached".into());
             }
-            let Some(connector) = self.0.take() else {
-                return Err(IronRdpErrorKind::Consumed.into());
-            };
-
-            let mut connector = connector.with_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend {})));
+            let connector = self
+                .0
+                .as_mut()
+                .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
+            if !matches!(
+                connector.state,
+                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
+            ) {
+                return Err("RDPSND must be attached before connecting".into());
+            }
+            if self.2.compatibility_rdpsnd {
+                self.2.compatibility_rdpsnd = false;
+                connector.config.enable_audio_playback = true;
+                return Ok(());
+            }
+            if connector
+                .static_channels
+                .get_by_channel_name_key(&Rdpsnd::NAME)
+                .is_some()
+            {
+                return Err("RDPSND channel name is already registered".into());
+            }
+            if connector.static_channels.len() == ironrdp::svc::MAX_STATIC_CHANNELS {
+                return Err("no space for RDPSND channel".into());
+            }
+            connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend {})));
             connector.config.enable_audio_playback = true;
-            self.0 = Some(connector);
 
             Ok(())
         }
@@ -148,7 +192,8 @@ pub mod ffi {
         /// Use a fresh `NativeAudio` for each connection.
         /// Playback attaches RDPDR without redirected devices when the channel is absent.
         /// Existing RDPDR configuration is preserved.
-        /// An existing RDPSND channel prevents native playback from being attached.
+        /// An existing RDPSND channel prevents native playback from being attached,
+        /// except for the silent compatibility channel installed for RDPDR.
         pub fn with_native_audio(&mut self, audio: &NativeAudio) -> Result<(), Box<IronRdpError>> {
             let connector = self
                 .0
@@ -163,7 +208,10 @@ pub mod ffi {
             ) {
                 return Err("native audio must be attached before connecting".into());
             }
-            audio.0.attach(connector)?;
+            audio.0.attach(connector, self.2.compatibility_rdpsnd)?;
+            if audio.0.has_playback() {
+                self.2.compatibility_rdpsnd = false;
+            }
             self.1 = Some(std::sync::Arc::clone(&audio.0));
             Ok(())
         }
@@ -194,16 +242,42 @@ pub mod ffi {
             ) {
                 return Err("RDPDR must be attached before connecting".into());
             }
-            if self.3 {
+            if self.2.smartcard {
                 return Err("smartcard RDPDR is already configured".into());
+            }
+            let existing_rdpdr = connector
+                .static_channels
+                .get_by_channel_name_key(&ironrdp::rdpdr::Rdpdr::NAME)
+                .is_some();
+            if existing_rdpdr
+                && (connector
+                    .static_channels
+                    .get_by_type::<ironrdp::rdpdr::Rdpdr>()
+                    .is_none()
+                    || (self.2.drives.is_empty() && !self.1.as_ref().is_some_and(|audio| audio.has_playback())))
+            {
+                return Err("RDPDR channel name is already registered".into());
+            }
+            let existing_rdpsnd = connector
+                .static_channels
+                .get_by_channel_name_key(&ironrdp::rdpsnd::client::Rdpsnd::NAME)
+                .is_some();
+            let needed = usize::from(!existing_rdpdr) + usize::from(!existing_rdpsnd);
+            if ironrdp::svc::MAX_STATIC_CHANNELS < connector.static_channels.len() + needed {
+                return Err("no space for RDPDR and RDPSND channels".into());
             }
 
             let rdpdr = self.create_rdpdr(computer_name, Some(smart_card_device_id))?;
-            self.0
+            let connector = self
+                .0
                 .as_mut()
-                .ok_or_else(|| ValueConsumedError::for_item("connector"))?
-                .attach_static_channel(rdpdr);
-            self.3 = true;
+                .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
+            connector.attach_static_channel(rdpdr);
+            if !existing_rdpsnd {
+                super::attach_rdpdr_compatibility_rdpsnd(connector);
+                self.2.compatibility_rdpsnd = true;
+            }
+            self.2.smartcard = true;
 
             Ok(())
         }
@@ -570,8 +644,7 @@ mod tests {
         Ok(ClientConnector(
             Some(ironrdp::connector::ClientConnector::new(config.connector, client_addr)),
             None,
-            Vec::new(),
-            false,
+            Default::default(),
         ))
     }
 

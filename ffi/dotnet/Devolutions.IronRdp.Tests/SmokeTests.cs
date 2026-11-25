@@ -27,7 +27,100 @@ internal static class SmokeTests
 
     internal static IEnumerable<(string Name, System.Action Run)> Cases()
     {
-        if (!OperatingSystem.IsWindows())
+        if (OperatingSystem.IsWindows())
+        {
+            // oracle: ffi/README.md "Windows drive redirection"
+            yield return ("Windows config accepts multiple independently selected drives", () =>
+            {
+                var builder = TlsConfigBuilder();
+                AddWindowsDrives(builder);
+                var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+
+                AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+            });
+
+            // oracle: ffi/README.md "Windows drive redirection" requires normalized drive-letter paths
+            foreach (var (name, root) in new[]
+            {
+                ("relative", @"relative\folder"),
+                ("parent", @"C:\folder\..\other"),
+                ("UNC", @"\\server\share"),
+                ("device", @"\\.\C:\folder"),
+                ("verbatim", @"\\?\C:\folder"),
+                ("embedded NUL", "C:\\folder\0bad"),
+            })
+            {
+                yield return ($"Windows drive config rejects {name} root without changing the builder", () =>
+                {
+                    var builder = TlsConfigBuilder();
+                    Throws<IronRdpException>(() => builder.AddRedirectedDrive("Invalid", root, false));
+                    AddWindowsDrives(builder);
+                    var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+                    connector.WithStaticChannelRdpdr("smoke-tests", 3);
+                    AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+                });
+            }
+
+            // oracle: RedirectedDrive::new requires a nonempty name without NUL
+            foreach (var (name, displayName) in new[] { ("empty", ""), ("embedded NUL", "bad\0name") })
+            {
+                yield return ($"Windows drive config rejects {name} name without changing the builder", () =>
+                {
+                    var builder = TlsConfigBuilder();
+                    Throws<IronRdpException>(() => builder.AddRedirectedDrive(displayName, WindowsDriveRoot(), false));
+                    AddWindowsDrives(builder);
+                    var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+                    connector.WithStaticChannelRdpdr("smoke-tests", 3);
+                    AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+                });
+            }
+
+            // oracle: ffi/README.md assigns drive IDs from one and rejects a conflicting smartcard ID
+            yield return ("Windows smartcard ID collision leaves the connector usable", () =>
+            {
+                var builder = TlsConfigBuilder();
+                AddWindowsDrives(builder);
+                var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+
+                ThrowsWithMessage<IronRdpException>(
+                    () => connector.WithStaticChannelRdpdr("smoke-tests", 1),
+                    "smartcard device ID conflicts with a redirected drive");
+                ThrowsWithMessage<IronRdpException>(
+                    () => connector.WithStaticChannelRdpdr("smoke-tests", 2),
+                    "smartcard device ID conflicts with a redirected drive");
+                connector.WithStaticChannelRdpdr("smoke-tests", 0);
+                AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+            });
+
+            // oracle: ffi/README.md says smartcard and native audio preserve configured drives in either order
+            yield return ("Windows drives and smartcard precede native playback", () =>
+            {
+                var builder = TlsConfigBuilder();
+                AddWindowsDrives(builder);
+                var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+                using var audio = NativeAudio.New(true, true, "", "", 0);
+                connector.WithStaticChannelRdpdr("smoke-tests", 0);
+                connector.WithNativeAudio(audio);
+                Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+                Throws<IronRdpException>(() => connector.WithStaticChannelRdpdr("smoke-tests", 0));
+                AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+            });
+
+            // oracle: ffi/README.md says smartcard and native audio preserve configured drives in either order
+            yield return ("Windows native playback precedes smartcard with drives", () =>
+            {
+                var builder = TlsConfigBuilder();
+                AddWindowsDrives(builder);
+                var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+                using var audio = NativeAudio.New(true, true, "", "", 0);
+                connector.WithNativeAudio(audio);
+                connector.WithStaticChannelRdpdr("smoke-tests", 0);
+                Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+                Throws<IronRdpException>(() => connector.WithStaticChannelRdpdr("smoke-tests", 0));
+                AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+            });
+        }
+        else
         {
             // oracle: user request limits drive redirection to Windows and requires unsupported platforms to fail explicitly
             yield return ("drive redirection rejects unsupported platforms", () =>
@@ -37,6 +130,86 @@ internal static class SmokeTests
                 True(error.Message.Contains("drive redirection is supported only on Windows"), $"error message: {error.Message}");
             });
         }
+
+        // oracle: MS-RDPEFS Appendix A note 1 requires RDPSND for Windows servers to communicate on RDPDR
+        yield return ("smartcard RDPDR advertises RDPSND without native playback", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+        });
+
+        // oracle: MS-RDPEFS Appendix A note 1 and ffi/README.md require RDPDR compatibility and native playback together
+        yield return ("native playback can replace the RDPDR silent channel", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(true, true, "", "", 0);
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            connector.WithNativeAudio(audio);
+            Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+            Throws<IronRdpException>(() => connector.WithStaticChannelRdpdr("smoke-tests", 0));
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+        });
+
+        // oracle: ffi/README.md preserves an existing audio channel when attaching smartcard RDPDR
+        yield return ("smartcard RDPDR preserves existing native playback", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(true, true, "", "", 0);
+            connector.WithNativeAudio(audio);
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+        });
+
+        // oracle: capture does not replace the silent channel that Windows RDPDR requires
+        yield return ("capture-only audio preserves the RDPDR silent channel", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(false, true, "", "", 0);
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            connector.WithNativeAudio(audio);
+            connector.WithStaticChannelRdpSnd();
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+        });
+
+        // oracle: a rejected native audio attachment must not remove RDPDR's compatibility channel
+        yield return ("rejected native playback leaves RDPDR and RDPSND usable", () =>
+        {
+            var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(true, false, "", "", 0);
+            first.WithNativeAudio(audio);
+            second.WithStaticChannelRdpdr("smoke-tests", 0);
+            Throws<IronRdpException>(() => second.WithNativeAudio(audio));
+            using var replacement = NativeAudio.New(true, false, "", "", 0);
+            second.WithNativeAudio(replacement);
+            Throws<IronRdpException>(() => second.WithStaticChannelRdpSnd());
+            AssertConnectorChannels(second, "rdpdr", "rdpsnd", "drdynvc");
+        });
+
+        // oracle: an explicitly configured RDPSND channel must not be replaced by RDPDR
+        yield return ("smartcard RDPDR preserves explicit static playback", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(true, false, "", "", 0);
+            connector.WithStaticChannelRdpSnd();
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            Throws<IronRdpException>(() => connector.WithNativeAudio(audio));
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+        });
+
+        // oracle: channel changes must not alter an in-progress connection
+        yield return ("static playback cannot be attached after connecting starts", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var buf = WriteBuf.New();
+            connector.StepNoInput(buf);
+            Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+            buf.Clear();
+            connector.Step(TpktX224ConfirmSelectingTls, buf);
+            True(connector.ShouldPerformSecurityUpgrade(), "connector continues after rejection");
+        });
 
         // oracle: ffi/INTENT.md "Copying into caller buffers" (bytes past the image)
         yield return ("decoded image exposes its size and zeroed data", () =>
@@ -879,6 +1052,7 @@ internal static class SmokeTests
             first.WithNativeAudio(audio);
             Throws<IronRdpException>(() => second.WithNativeAudio(audio));
             Throws<IronRdpException>(() => first.WithStaticChannelRdpSnd());
+            AssertConnectorChannels(first, "rdpdr", "rdpsnd", "drdynvc");
         });
 
         // oracle: mutant silently replace an already attached static playback channel
@@ -1796,7 +1970,39 @@ internal static class SmokeTests
         }
     }
 
-    private static Config TlsConfig(DirectDvcConfig? directDvc = null)
+    private static string WindowsDriveRoot() => Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+
+    private static void AddWindowsDrives(ConfigBuilder builder)
+    {
+        var root = WindowsDriveRoot();
+        var parent = Directory.GetParent(root)!.FullName;
+        builder.AddRedirectedDrive("ReadOnly", root, true);
+        builder.AddRedirectedDrive("Writable", parent, false);
+    }
+
+    private static void AssertConnectorChannels(ClientConnector connector, params string[] channels)
+    {
+        using var buf = WriteBuf.New();
+        connector.StepNoInput(buf);
+        buf.Clear();
+        connector.Step(TpktX224ConfirmSelectingTls, buf);
+        True(connector.ShouldPerformSecurityUpgrade(), "TLS upgrade is next");
+        connector.MarkSecurityUpgradeAsDone();
+        buf.Clear();
+        connector.StepNoInput(buf);
+        using var filled = buf.Filled;
+        var request = new byte[(int)filled.Size];
+        filled.Fill(request);
+        foreach (var channel in channels)
+        {
+            var name = System.Text.Encoding.ASCII.GetBytes(channel + "\0");
+            int first = request.AsSpan().IndexOf(name);
+            True(first >= 0, $"{channel} is advertised");
+            Equal(first, request.AsSpan().LastIndexOf(name), $"{channel} is advertised once");
+        }
+    }
+
+    private static ConfigBuilder TlsConfigBuilder()
     {
         var builder = ConfigBuilder.New();
         builder.WithUsernameAndPassword("user", "password");
@@ -1806,6 +2012,12 @@ internal static class SmokeTests
         builder.EnableTls = true;
         builder.EnableCredssp = false;
         builder.PerformanceFlags = PerformanceFlags.NewDefault();
+        return builder;
+    }
+
+    private static Config TlsConfig(DirectDvcConfig? directDvc = null)
+    {
+        var builder = TlsConfigBuilder();
         if (directDvc is not null)
         {
             builder.DirectDvc = directDvc;

@@ -144,12 +144,15 @@ mod native {
         pub(crate) fn attach(
             self: &Arc<Self>,
             connector: &mut ironrdp::connector::ClientConnector,
+            compatibility_rdpsnd: bool,
         ) -> Result<(), &'static str> {
             let channels = &connector.static_channels;
-            let playback_type = channels.get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>().is_some();
+            let playback_type =
+                !compatibility_rdpsnd && channels.get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>().is_some();
             let drdynvc_type = channels.get_by_type::<ironrdp::dvc::DrdynvcClient>().is_some();
             let rdpdr_type = channels.get_by_type::<ironrdp::rdpdr::Rdpdr>().is_some();
             if self.playback
+                && !compatibility_rdpsnd
                 && channels
                     .get_by_channel_name_key(&ironrdp::rdpsnd::client::Rdpsnd::NAME)
                     .is_some()
@@ -167,8 +170,9 @@ mod native {
             {
                 return Err("RDPDR channel name is already registered");
             }
-            let needed =
-                usize::from(self.playback) + usize::from(!drdynvc_type) + usize::from(self.playback && !rdpdr_type);
+            let needed = usize::from(self.playback && !compatibility_rdpsnd)
+                + usize::from(!drdynvc_type)
+                + usize::from(self.playback && !rdpdr_type);
             if ironrdp::svc::MAX_STATIC_CHANNELS < channels.len() + needed {
                 return Err("no space for native audio channels");
             }
@@ -198,6 +202,11 @@ mod native {
             connector.config.enable_audio_capture = self.capture || capture_dvc;
             connector.config.enable_audio_playback = self.playback || playback_type || playback_dvc;
             if self.playback {
+                if compatibility_rdpsnd {
+                    connector
+                        .static_channels
+                        .remove_by_type::<ironrdp::rdpsnd::client::Rdpsnd>();
+                }
                 if !rdpdr_type {
                     // UNTESTED: Windows servers require RDPDR to start playback.
                     // Verify audible playback with no devices redirected when changing this registration.
@@ -947,7 +956,7 @@ mod native {
         fn playback_attaches_rdpdr_when_missing() {
             let audio = NativeAudio::new(true, false, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
             let mut connector = connector();
-            audio.0.attach(&mut connector).expect("attach native playback");
+            audio.0.attach(&mut connector, false).expect("attach native playback");
 
             assert!(
                 connector
@@ -971,7 +980,7 @@ mod native {
                     .unwrap(),
             );
 
-            audio.0.attach(&mut connector).expect("attach native playback");
+            audio.0.attach(&mut connector, false).expect("attach native playback");
 
             assert_eq!(
                 original,
@@ -988,7 +997,7 @@ mod native {
         fn capture_only_does_not_attach_rdpdr() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
             let mut connector = connector();
-            audio.0.attach(&mut connector).expect("attach native capture");
+            audio.0.attach(&mut connector, false).expect("attach native capture");
 
             assert!(
                 connector
@@ -1016,7 +1025,7 @@ mod native {
         fn capture_only_disables_playback_advertisement() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
             let mut connector = connector();
-            audio.0.attach(&mut connector).expect("attach native capture");
+            audio.0.attach(&mut connector, false).expect("attach native capture");
 
             assert!(!connector.config.enable_audio_playback);
         }
@@ -1651,6 +1660,7 @@ mod android {
         pub(crate) fn attach(
             self: &Arc<Self>,
             _connector: &mut ironrdp::connector::ClientConnector,
+            _compatibility_rdpsnd: bool,
         ) -> Result<(), &'static str> {
             Err("native audio is not supported on Android")
         }

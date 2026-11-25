@@ -64,6 +64,8 @@ Each selected directory is announced as a remote drive during RDPDR channel init
 Set `readOnly` to reject remote writes to that drive.
 Drive selection changes require a new connector and connection.
 Replace the example paths and credentials with values for your session.
+The connector advertises a silent RDPSND channel for RDPDR compatibility; it does not play audio.
+Attach native audio separately if playback is needed.
 
 ```csharp
 var builder = ConfigBuilder.New();
@@ -80,6 +82,7 @@ var connector = ClientConnector.New(config, "127.0.0.1:3389");
 
 The root must be an existing, absolute, normalized drive-letter path.
 Relative, parent-directory, UNC, device and verbatim paths are rejected.
+The path syntax is checked when adding the drive; the directory is opened when the server initializes RDPDR.
 Drive redirection is supported only on Windows; other platforms return an error.
 
 Call `ClientConnector.WithStaticChannelRdpdr(computerName, smartCardDeviceId)` to add smartcard redirection.
@@ -93,7 +96,7 @@ Attach native playback and, optionally, microphone capture before starting the c
 Create a new `NativeAudio` for each connection.
 Native playback joins RDPDR without redirected devices if it is absent, because Windows servers require the channel to start playback.
 An existing RDPDR configuration is preserved.
-An existing RDPSND channel prevents native playback from being attached.
+An existing RDPSND channel prevents native playback from being attached, except for the silent channel installed for RDPDR compatibility.
 
 ```csharp
 using var audio = NativeAudio.New(
