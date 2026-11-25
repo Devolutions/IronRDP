@@ -1041,11 +1041,13 @@ fn rename(
             let same_directory =
                 FileIdentity::of(&fstat(from_parent.as_fd()).map_err(status_from_errno)?) == to_parent_identity;
             let is_another_link = source.st_nlink >= 2
-                && (!same_directory || {
-                    let from_stored = stored_name(from_parent.as_fd(), from_name).map_err(status_from_errno)?;
-                    let to_stored = stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?;
-                    matches!((from_stored, to_stored), (Some(from_stored), Some(to_stored)) if from_stored != to_stored)
-                });
+                && (!same_directory
+                    || from_name != to_name
+                        && {
+                            let from_stored = stored_name(from_parent.as_fd(), from_name).map_err(status_from_errno)?;
+                            let to_stored = stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?;
+                            matches!((from_stored, to_stored), (Some(from_stored), Some(to_stored)) if from_stored != to_stored)
+                        });
             if is_another_link {
                 unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
                 return Ok(to_ancestors);
@@ -1067,21 +1069,22 @@ fn rename(
 /// The name under which `directory` stores the entry that `name` resolves to, or `None` where that cannot be told.
 ///
 /// A case- or normalization-insensitive filesystem resolves spellings other than the stored one.
-/// macOS reports the name of the entry a lookup found, and elsewhere the stored name is known only when it is `name` itself.
+/// macOS reports the name of the entry a lookup found, and elsewhere, or on a volume that does not, the stored name is known only when it is `name` itself.
 fn stored_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Option<Vec<u8>>> {
     #[cfg(target_os = "macos")]
-    let name = looked_up_name(directory, name)?;
+    let reported = looked_up_name(directory, name)?;
     #[cfg(not(target_os = "macos"))]
-    let name = name.as_bytes().to_vec();
+    let reported = None;
+    let name = reported.unwrap_or_else(|| name.as_bytes().to_vec());
     // UNTESTED: a name counts as stored only when the directory lists an entry under exactly that name, and `rename` removes no link for a name that does not.
     // A filesystem that reports the spelling it was asked for, or a case-insensitive directory on Linux, would otherwise make two spellings of one entry look like two links, and the rename would remove that entry.
     // The tests run where every name that reaches this check is listed, so after changing either, check that a name the listing lacks yields `None` and that `rename` then keeps both links.
     Ok(contains_entry(directory, &name)?.then_some(name))
 }
 
-/// The name of the entry that `name` resolves to in `directory`, as the filesystem reports it.
+/// The name of the entry that `name` resolves to in `directory`, as the filesystem reports it, or `None` on a volume that does not report names.
 #[cfg(target_os = "macos")]
-fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Vec<u8>> {
+fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Option<Vec<u8>>> {
     use std::ffi::CString;
     use std::os::fd::AsRawFd as _;
 
@@ -1113,7 +1116,14 @@ fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Vec<u8>>
             libc::c_ulong::from(libc::FSOPT_NOFOLLOW),
         )
     };
-    Errno::result(result)?;
+    match Errno::result(result) {
+        Ok(_) => {}
+        // UNTESTED: a volume that does not answer the query is no error, and the name is then looked for in the listing as given.
+        // Failing here would refuse every rename onto a name of the same file on such a volume, where listing and renaming work.
+        // No volume the tests run on refuses the query, so after changing this, check that these two errors yield `None` and every other error is returned.
+        Err(Errno::ENOTSUP | Errno::EOPNOTSUPP) => return Ok(None),
+        Err(error) => return Err(error),
+    }
     // `attr_dataoffset` counts from the reference itself, and `attr_length` includes the NUL.
     let field = |at: usize| buffer.get(at..)?.first_chunk::<4>().copied();
     let stored = (|| {
@@ -1122,7 +1132,7 @@ fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Vec<u8>>
         let start = REFERENCE.checked_add(offset)?;
         buffer.get(start..start.checked_add(length)?.checked_sub(1)?)
     })();
-    stored.map(<[u8]>::to_vec).ok_or(Errno::ENAMETOOLONG)
+    stored.map(|stored| Some(stored.to_vec())).ok_or(Errno::ENAMETOOLONG)
 }
 
 /// Whether `directory` holds an entry stored under exactly the bytes of `name`, whatever spellings the filesystem treats as equal.
