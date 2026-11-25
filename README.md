@@ -177,7 +177,7 @@ Run `cargo xtask --help` for the command list and `cargo xtask bootstrap` to ins
 Run `cargo xtask ci` before opening a pull request; it covers everything CI runs except FFI and .NET checks, which have separate `cargo xtask ffi` commands.
 
 Workspace builds use the native prerequisites listed under [Install with Cargo].
-The web client also needs Node.js >= 24 LTS, and the FFI bindings need the .NET SDK.
+The web client also needs Node.js >= 24 LTS, and the FFI bindings need the .NET 10 SDK.
 
 ## AI-assisted development
 

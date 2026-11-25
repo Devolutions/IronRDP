@@ -95,4 +95,6 @@
           <Abi>x86_64</Abi>
       </AndroidNativeLibrary>
   </ItemGroup> 
+
+  <Import Project="$(MSBuildThisFileDirectory)Devolutions.IronRdp.iOS.targets" Condition="Exists('$(MSBuildThisFileDirectory)Devolutions.IronRdp.iOS.targets')" />
 </Project>
