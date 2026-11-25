@@ -812,6 +812,84 @@ fn rename_to_the_spelling_another_handle_gave_the_entry_keeps_a_hard_linked_file
     assert_eq!(stored_names(&fixture.share), ["AB.txt", "q.txt"]);
 }
 
+/// A handle opened under another spelling of one link and renamed onto another link of its file removes the link it was opened through.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_through_another_spelling_onto_another_link_removes_the_source() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("ab.txt"), fixture.share.join("q.txt")).expect("link file");
+    assert!(
+        fixture.share.join("Ab.txt").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\Ab.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\q.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(stored_names(&fixture.share), ["q.txt"]);
+}
+
+/// Another spelling of another link of the file names that link, so the source goes.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_onto_another_spelling_of_another_link_removes_the_source() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("ab.txt"), fixture.share.join("q.txt")).expect("link file");
+    assert!(
+        fixture.share.join("Q.TXT").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\ab.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\Q.TXT", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!fixture.share.join("ab.txt").exists());
+    assert_eq!(
+        std::fs::read(fixture.share.join("Q.TXT")).expect("read Q.TXT"),
+        b"linked"
+    );
+}
+
+/// A rename through another spelling onto another link frees the source name for a new file, and a handle opened through the removed link follows the file.
+// MS-FSA §2.1.5.15.12 moves only the renaming handle to the new link, but Windows deletes the renamed file.
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
+#[cfg(target_os = "macos")]
+#[test]
+fn delete_on_close_follows_a_rename_through_another_spelling_onto_another_link() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("ab.txt"), fixture.share.join("q.txt")).expect("link file");
+    assert!(
+        fixture.share.join("Ab.txt").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let deleting_id = create(&mut backend, r"\ab.txt", CreateDisposition::FILE_OPEN);
+    let renaming_id = create(&mut backend, r"\Ab.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, renaming_id, rename_to(r"\q.txt", false));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    std::fs::write(fixture.share.join("ab.txt"), b"replacement").expect("write replacement");
+    let _ = set_information(&mut backend, deleting_id, delete_pending(true));
+    close(&mut backend, deleting_id);
+    close(&mut backend, renaming_id);
+
+    // oracle: spec MS-FSA §2.1.5.15.12
+    assert_eq!(
+        std::fs::read(fixture.share.join("ab.txt")).expect("read replacement"),
+        b"replacement"
+    );
+    assert!(!fixture.share.join("q.txt").exists());
+}
+
 /// A directory has one link, however many Unix counts, so renaming it to its stored name through a handle opened under another spelling succeeds.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[cfg(target_os = "macos")]

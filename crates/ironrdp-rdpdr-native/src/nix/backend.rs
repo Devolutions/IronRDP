@@ -1000,7 +1000,7 @@ pub(crate) fn set_information(
 /// An existing `to` is a collision unless `replace_if_exists` is set.
 /// A directory `to`, or one with open handles, is never replaced, and one marked for deletion fails with STATUS_DELETE_PENDING.
 /// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision, and a `to` naming another hard link of the source removes the source link.
-/// In one directory the source link is removed only when the handle's name and `to` are both spelled as their entries are stored, and otherwise both links stay.
+/// In one directory the two are told apart by the names their entries are stored under, and both links stay where a stored name cannot be told, as for another spelling in a case-insensitive directory on Linux.
 /// A source name kept that way still names the file, so a later create of that name opens or overwrites it.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
 /// The target directory is opened as a create opens it, so a path through a directory marked for deletion is refused with STATUS_DELETE_PENDING.
@@ -1034,16 +1034,17 @@ fn rename(
             // `to` is either the source link under another spelling, as a case- or normalization-insensitive filesystem resolves it, or another hard link of the same file.
             // POSIX rename leaves two hard links of one file both in place, while [MS-FSA] removes the source link.
             // A link lives in one directory, so in another directory `to` is another link.
-            // In the same one it is known to be another link only if entries are stored under exactly the handle's name and exactly `to`.
-            // Otherwise both names may be spellings of one entry, since neither need be the stored one, and unlinking the handle's name would remove that entry.
-            // The rename goes ahead instead, which at most changes the spelling of a link and never removes one.
+            // In the same one it is another link when the two names resolve to entries stored under different names.
+            // Where the stored name of either cannot be told, both may be spellings of one entry, and unlinking the handle's name would remove that entry.
+            // The rename goes ahead then, which at most changes the spelling of a link and never removes one.
             let same_directory =
                 FileIdentity::of(&fstat(from_parent.as_fd()).map_err(status_from_errno)?) == to_parent_identity;
             let is_another_link = source.st_nlink >= 2
-                && (!same_directory
-                    || from_name != to_name
-                        && contains_entry(to_parent.as_fd(), to_name).map_err(status_from_errno)?
-                        && contains_entry(from_parent.as_fd(), from_name).map_err(status_from_errno)?);
+                && (!same_directory || {
+                    let from_stored = stored_name(from_parent.as_fd(), from_name).map_err(status_from_errno)?;
+                    let to_stored = stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?;
+                    matches!((from_stored, to_stored), (Some(from_stored), Some(to_stored)) if from_stored != to_stored)
+                });
             if is_another_link {
                 unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
                 return Ok(to_ancestors);
@@ -1062,8 +1063,69 @@ fn rename(
     Ok(to_ancestors)
 }
 
+/// The name `directory` stores the entry under that `name` resolves to, or `None` where that cannot be told.
+///
+/// A case- or normalization-insensitive filesystem resolves spellings other than the stored one.
+/// macOS reports the name of the entry a lookup found, and elsewhere the stored name is known only when it is `name` itself.
+fn stored_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Option<Vec<u8>>> {
+    #[cfg(target_os = "macos")]
+    let name = looked_up_name(directory, name)?;
+    #[cfg(not(target_os = "macos"))]
+    let name = name.as_bytes().to_vec();
+    // UNTESTED: a name counts as stored only when the directory lists an entry under exactly it.
+    // A filesystem that reports the spelling it was asked for, or a case-insensitive directory on Linux, would otherwise pass two spellings of one entry for two links, and the rename would remove that entry.
+    // The tests run where every name that reaches this check is listed, so after changing it, check that a name the listing lacks yields `None`.
+    Ok(contains_entry(directory, &name)?.then_some(name))
+}
+
+/// The name of the entry that `name` resolves to in `directory`, as the filesystem reports it.
+#[cfg(target_os = "macos")]
+fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Vec<u8>> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd as _;
+
+    use nix::libc;
+
+    // `getattrlistat` answers ATTR_CMN_NAME with the length of its answer, a reference to the name, and the NUL-terminated name.
+    const REFERENCE: usize = 4 /* length */;
+    const NAME: usize = REFERENCE + 4 /* attr_dataoffset */ + 4 /* attr_length */;
+    // A name holds at most 255 UTF-16 code units, each at most three bytes of UTF-8.
+    let mut buffer = [0u8; NAME + 255 * 3 + 1 /* NUL */];
+    let name = CString::new(name).map_err(|_| Errno::EINVAL)?;
+    let mut attributes = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_NAME,
+        volattr: 0,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    // SAFETY: `directory` is an open descriptor, `name` is NUL-terminated, `attributes` is an initialized attribute list, and the call writes at most `buffer.len()` bytes to `buffer`.
+    let result = unsafe {
+        libc::getattrlistat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            (&raw mut attributes).cast(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            libc::c_ulong::from(libc::FSOPT_NOFOLLOW),
+        )
+    };
+    Errno::result(result)?;
+    // attr_dataoffset counts from the reference itself, and attr_length includes the NUL.
+    let field = |at: usize| buffer.get(at..)?.first_chunk::<4>().copied();
+    let stored = (|| {
+        let offset = usize::try_from(i32::from_ne_bytes(field(REFERENCE)?)).ok()?;
+        let length = usize::try_from(u32::from_ne_bytes(field(REFERENCE + 4 /* attr_dataoffset */)?)).ok()?;
+        let start = REFERENCE.checked_add(offset)?;
+        buffer.get(start..start.checked_add(length)?.checked_sub(1)?)
+    })();
+    stored.map(<[u8]>::to_vec).ok_or(Errno::ENAMETOOLONG)
+}
+
 /// Whether `directory` holds an entry stored under exactly the bytes of `name`, whatever spellings the filesystem treats as equal.
-fn contains_entry(directory: BorrowedFd<'_>, name: &str) -> nix::Result<bool> {
+fn contains_entry(directory: BorrowedFd<'_>, name: &[u8]) -> nix::Result<bool> {
     // A fresh descriptor reads the directory from its start without moving the caller's read position.
     let directory = nix::fcntl::openat(
         directory,
@@ -1072,7 +1134,7 @@ fn contains_entry(directory: BorrowedFd<'_>, name: &str) -> nix::Result<bool> {
         Mode::empty(),
     )?;
     for entry in Dir::from_fd(directory)? {
-        if entry?.file_name().to_bytes() == name.as_bytes() {
+        if entry?.file_name().to_bytes() == name {
             return Ok(true);
         }
     }
