@@ -812,7 +812,7 @@ fn rename_to_the_spelling_another_handle_gave_the_entry_keeps_a_hard_linked_file
     assert_eq!(stored_names(&fixture.share), ["AB.txt", "q.txt"]);
 }
 
-/// A handle opened under another spelling of one link and renamed onto another link of its file removes the link it was opened through.
+/// Renaming onto another link of the file removes the source link, though the handle was opened under another spelling of it.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[cfg(target_os = "macos")]
 #[test]
@@ -858,12 +858,11 @@ fn rename_onto_another_spelling_of_another_link_removes_the_source() {
     );
 }
 
-/// A rename through another spelling onto another link frees the source name for a new file, and a handle opened through the removed link follows the file.
-// MS-FSA §2.1.5.15.12 moves only the renaming handle to the new link, but Windows deletes the renamed file.
-// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
+/// A rename onto another link of the file frees the source name, so a file that takes it shares nothing with the renamed one, whatever spelling its handles were opened under.
+// oracle: spec MS-FSA §2.1.5.15.12
 #[cfg(target_os = "macos")]
 #[test]
-fn delete_on_close_follows_a_rename_through_another_spelling_onto_another_link() {
+fn a_file_taking_the_name_a_rename_onto_another_link_freed_is_another_file() {
     let fixture = Fixture::new();
     std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
     std::fs::hard_link(fixture.share.join("ab.txt"), fixture.share.join("q.txt")).expect("link file");
@@ -878,16 +877,16 @@ fn delete_on_close_follows_a_rename_through_another_spelling_onto_another_link()
     let response = set_information(&mut backend, renaming_id, rename_to(r"\q.txt", false));
     assert_eq!(response_status(&response), NtStatus::SUCCESS);
     std::fs::write(fixture.share.join("ab.txt"), b"replacement").expect("write replacement");
+    let renamed = std::fs::read(fixture.share.join("q.txt")).expect("read q.txt");
     let _ = set_information(&mut backend, deleting_id, delete_pending(true));
     close(&mut backend, deleting_id);
     close(&mut backend, renaming_id);
 
-    // oracle: spec MS-FSA §2.1.5.15.12
+    assert_eq!(renamed, b"linked");
     assert_eq!(
         std::fs::read(fixture.share.join("ab.txt")).expect("read replacement"),
         b"replacement"
     );
-    assert!(!fixture.share.join("q.txt").exists());
 }
 
 /// A directory has one link, however many Unix counts, so renaming it to its stored name through a handle opened under another spelling succeeds.

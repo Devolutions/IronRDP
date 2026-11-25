@@ -1001,6 +1001,7 @@ pub(crate) fn set_information(
 /// A directory `to`, or one with open handles, is never replaced, and one marked for deletion fails with STATUS_DELETE_PENDING.
 /// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision, and a `to` naming another hard link of the source removes the source link.
 /// In one directory the two are told apart by the names their entries are stored under, and both links stay where a stored name cannot be told, as for another spelling in a case-insensitive directory on Linux.
+/// The link that stays keeps the spelling it is stored under.
 /// A source name kept that way still names the file, so a later create of that name opens or overwrites it.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
 /// The target directory is opened as a create opens it, so a path through a directory marked for deletion is refused with STATUS_DELETE_PENDING.
@@ -1063,7 +1064,7 @@ fn rename(
     Ok(to_ancestors)
 }
 
-/// The name `directory` stores the entry under that `name` resolves to, or `None` where that cannot be told.
+/// The name under which `directory` stores the entry that `name` resolves to, or `None` where that cannot be told.
 ///
 /// A case- or normalization-insensitive filesystem resolves spellings other than the stored one.
 /// macOS reports the name of the entry a lookup found, and elsewhere the stored name is known only when it is `name` itself.
@@ -1072,9 +1073,9 @@ fn stored_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Option<Vec<
     let name = looked_up_name(directory, name)?;
     #[cfg(not(target_os = "macos"))]
     let name = name.as_bytes().to_vec();
-    // UNTESTED: a name counts as stored only when the directory lists an entry under exactly it.
-    // A filesystem that reports the spelling it was asked for, or a case-insensitive directory on Linux, would otherwise pass two spellings of one entry for two links, and the rename would remove that entry.
-    // The tests run where every name that reaches this check is listed, so after changing it, check that a name the listing lacks yields `None`.
+    // UNTESTED: a name counts as stored only when the directory lists an entry under exactly that name, and `rename` removes no link for a name that does not.
+    // A filesystem that reports the spelling it was asked for, or a case-insensitive directory on Linux, would otherwise make two spellings of one entry look like two links, and the rename would remove that entry.
+    // The tests run where every name that reaches this check is listed, so after changing either, check that a name the listing lacks yields `None` and that `rename` then keeps both links.
     Ok(contains_entry(directory, &name)?.then_some(name))
 }
 
@@ -1090,7 +1091,7 @@ fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Vec<u8>>
     const REFERENCE: usize = 4 /* length */;
     const NAME: usize = REFERENCE + 4 /* attr_dataoffset */ + 4 /* attr_length */;
     // A name holds at most 255 UTF-16 code units, each at most three bytes of UTF-8.
-    let mut buffer = [0u8; NAME + 255 * 3 + 1 /* NUL */];
+    let mut buffer = [0u8; NAME + 255 * 3 /* name */ + 1 /* NUL */];
     let name = CString::new(name).map_err(|_| Errno::EINVAL)?;
     let mut attributes = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
@@ -1113,7 +1114,7 @@ fn looked_up_name(directory: BorrowedFd<'_>, name: &str) -> nix::Result<Vec<u8>>
         )
     };
     Errno::result(result)?;
-    // attr_dataoffset counts from the reference itself, and attr_length includes the NUL.
+    // `attr_dataoffset` counts from the reference itself, and `attr_length` includes the NUL.
     let field = |at: usize| buffer.get(at..)?.first_chunk::<4>().copied();
     let stored = (|| {
         let offset = usize::try_from(i32::from_ne_bytes(field(REFERENCE)?)).ok()?;
