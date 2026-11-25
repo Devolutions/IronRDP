@@ -57,6 +57,36 @@ Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from 
 `Unavailable` means the channel was not requested.
 `ActiveStage.DisplayControlCapabilities` exposes the server's monitor count and area limits once `Ready`.
 
+## Windows drive redirection
+
+Select one or more directories on the `ConfigBuilder` before building the configuration.
+Each selected directory is announced as a remote drive during RDPDR channel initialization.
+Set `readOnly` to reject remote writes to that drive.
+Drive selection changes require a new connector and connection.
+Replace the example paths and credentials with values for your session.
+
+```csharp
+var builder = ConfigBuilder.New();
+builder.WithUsernameAndPassword("user", "password");
+builder.SetDesktopSize(1080, 1920);
+builder.ClientName = "IronRdp";
+builder.ClientDir = @"C:\";
+builder.PerformanceFlags = PerformanceFlags.NewDefault();
+builder.AddRedirectedDrive("Projects", @"C:\Users\me\Projects", readOnly: true);
+builder.AddRedirectedDrive("Data", @"D:\Data", readOnly: false);
+var config = builder.Build();
+var connector = ClientConnector.New(config, "127.0.0.1:3389");
+```
+
+The root must be an existing, absolute, normalized drive-letter path.
+Relative, parent-directory, UNC, device and verbatim paths are rejected.
+Drive redirection is supported only on Windows; other platforms return an error.
+
+Call `ClientConnector.WithStaticChannelRdpdr(computerName, smartCardDeviceId)` to add smartcard redirection.
+That call keeps the drives selected in the configuration.
+Drive IDs start at one, so choose a smartcard device ID that does not match a selected drive.
+Native audio playback can be attached before or after RDPDR without dropping its drive or smartcard configuration.
+
 ## Native audio
 
 Attach native playback and, optionally, microphone capture before starting the connector.

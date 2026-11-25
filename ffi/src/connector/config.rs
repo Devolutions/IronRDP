@@ -2,6 +2,18 @@ use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 
 use self::ffi::PerformanceFlagsType;
 
+#[cfg_attr(
+    not(windows),
+    expect(dead_code, reason = "redirected-drive settings are consumed only by Windows builds")
+)]
+#[derive(Clone)]
+pub(crate) struct RedirectedDriveConfig {
+    pub(crate) device_id: u32,
+    pub(crate) display_name: String,
+    pub(crate) root_path: String,
+    pub(crate) read_only: bool,
+}
+
 /// The bitmap settings used when the caller sets none, matching the native client.
 ///
 /// Without a codec on offer, the server falls back to sending the screen as nearly raw bitmaps,
@@ -48,9 +60,10 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct Config {
-        pub connector: ironrdp::connector::Config,
-        pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
-        pub direct_dvc: Option<DirectDvcConfig>,
+        pub(crate) connector: ironrdp::connector::Config,
+        pub(crate) dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
+        pub(crate) direct_dvc: Option<DirectDvcConfig>,
+        pub(crate) redirected_drives: Vec<super::RedirectedDriveConfig>,
     }
 
     impl Config {
@@ -69,6 +82,10 @@ pub mod ffi {
         }
     }
 
+    #[expect(
+        clippy::partial_pub_fields,
+        reason = "Diplomat exposes this opaque builder through methods only"
+    )]
     #[derive(Default)]
     #[diplomat::opaque_mut]
     pub struct ConfigBuilder {
@@ -96,6 +113,7 @@ pub mod ffi {
         pub timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>,
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
         pub direct_dvc: Option<DirectDvcConfig>,
+        redirected_drives: Vec<super::RedirectedDriveConfig>,
     }
 
     /// Where the server plays audio (the `audiomode` `.rdp` setting).
@@ -254,6 +272,47 @@ pub mod ffi {
             self.direct_dvc = Some(direct_dvc.clone());
         }
 
+        /// Selects a Windows directory to redirect as a remote drive.
+        ///
+        /// The root must be an absolute, normalized drive-letter path.
+        /// Drive IDs are assigned in selection order, starting at one.
+        /// Read-only drives reject remote writes.
+        /// This setting applies to every connector built from this configuration and requires reconnecting to change.
+        /// Drive redirection is unsupported on non-Windows platforms.
+        pub fn add_redirected_drive(
+            &mut self,
+            display_name: &str,
+            root_path: &str,
+            read_only: bool,
+        ) -> Result<(), Box<IronRdpError>> {
+            #[cfg(windows)]
+            {
+                let device_id =
+                    u32::try_from(self.redirected_drives.len() + 1).map_err(|_| "too many redirected drives")?;
+                ironrdp_rdpdr_native::RedirectedDrive::new(
+                    device_id,
+                    display_name.to_owned(),
+                    std::path::PathBuf::from(root_path),
+                    read_only,
+                )
+                .map_err(|error| {
+                    crate::error::GenericError(anyhow::Error::new(error).context("invalid redirected drive"))
+                })?;
+                self.redirected_drives.push(super::RedirectedDriveConfig {
+                    device_id,
+                    display_name: display_name.to_owned(),
+                    root_path: root_path.to_owned(),
+                    read_only,
+                });
+                Ok(())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (display_name, root_path, read_only);
+                Err("drive redirection is supported only on Windows".into())
+            }
+        }
+
         #[expect(
             deprecated,
             reason = "a `Config` literal must name every field, including the deprecated one"
@@ -338,6 +397,7 @@ pub mod ffi {
                 connector,
                 dvc_pipe_proxy,
                 direct_dvc,
+                redirected_drives: self.redirected_drives.clone(),
             }))
         }
     }
@@ -399,6 +459,40 @@ impl From<PerformanceFlagsType> for PerformanceFlags {
 #[cfg(test)]
 mod tests {
     use ironrdp::pdu::rdp::capability_sets::CodecProperty;
+
+    #[cfg(windows)]
+    // oracle: user request requires multiple drives to retain independent read-only settings
+    #[test]
+    fn redirected_drives_keep_independent_read_only_settings() {
+        let root_path = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut builder = super::ffi::ConfigBuilder::new();
+        builder.with_username_and_password("user", "password");
+        builder.set_desktop_size(768, 1024);
+        builder.set_client_name("client");
+        builder.set_client_dir("C:\\");
+        builder.set_performance_flags(&super::ffi::PerformanceFlags::new_default());
+        builder
+            .add_redirected_drive("ReadOnly", &root_path, true)
+            .expect("valid read-only drive");
+        builder
+            .add_redirected_drive("Writable", &root_path, false)
+            .expect("valid writable drive");
+
+        let config = builder.build().expect("valid configuration");
+
+        assert_eq!(config.redirected_drives.len(), 2);
+        assert!(config.redirected_drives[0].read_only);
+        assert!(!config.redirected_drives[1].read_only);
+    }
+
+    #[cfg(not(windows))]
+    // oracle: user request limits drive redirection to Windows and requires unsupported platforms to fail explicitly
+    #[test]
+    fn redirected_drives_are_rejected_on_unsupported_platforms() {
+        let mut builder = super::ffi::ConfigBuilder::new();
+
+        assert!(builder.add_redirected_drive("Shared", "C:\\shared", true).is_err());
+    }
 
     #[test]
     fn build_offers_remotefx_when_no_bitmap_config_is_set() {

@@ -35,6 +35,8 @@ pub mod ffi {
     pub struct ClientConnector(
         pub(crate) Option<ironrdp::connector::ClientConnector>,
         pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
+        pub(crate) Vec<super::config::RedirectedDriveConfig>,
+        pub(crate) bool,
     );
 
     // Basic Impl for ClientConnector
@@ -43,16 +45,81 @@ pub mod ffi {
             drdynvc.has_channel_name_of_type::<DirectDvcChannelProcessor>(channel_name)
         }
 
+        fn create_rdpdr(
+            &self,
+            computer_name: &str,
+            smart_card_device_id: Option<u32>,
+        ) -> Result<ironrdp::rdpdr::Rdpdr, Box<IronRdpError>> {
+            #[cfg(windows)]
+            {
+                let drives = self
+                    .2
+                    .iter()
+                    .map(|drive| {
+                        ironrdp_rdpdr_native::RedirectedDrive::new(
+                            drive.device_id,
+                            drive.display_name.clone(),
+                            std::path::PathBuf::from(&drive.root_path),
+                            drive.read_only,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| {
+                        crate::error::GenericError(
+                            anyhow::Error::new(error).context("invalid redirected drive configuration"),
+                        )
+                    })?;
+
+                if smart_card_device_id.is_some_and(|id| drives.iter().any(|drive| drive.device_id() == id)) {
+                    return Err("smartcard device ID conflicts with a redirected drive".into());
+                }
+
+                let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(drives)
+                    .map_err(|error| {
+                        crate::error::GenericError(
+                            anyhow::Error::new(error).context("invalid RDPDR backend configuration"),
+                        )
+                    })?
+                    .with_smartcard(smart_card_device_id.is_some());
+                let initial_drives = factory.initial_drives();
+                let mut rdpdr = ironrdp::rdpdr::Rdpdr::new(Box::new(factory.build()), computer_name.to_owned());
+                if !initial_drives.is_empty() {
+                    rdpdr = rdpdr.with_drives(Some(initial_drives));
+                }
+                if let Some(device_id) = smart_card_device_id {
+                    rdpdr = rdpdr.with_smartcard(device_id);
+                }
+                Ok(rdpdr)
+            }
+            #[cfg(not(windows))]
+            {
+                if !self.2.is_empty() {
+                    return Err("drive redirection is supported only on Windows".into());
+                }
+                let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(ironrdp::rdpdr::NoopRdpdrBackend);
+                let mut rdpdr = ironrdp::rdpdr::Rdpdr::new(backend, computer_name.to_owned());
+                if let Some(device_id) = smart_card_device_id {
+                    rdpdr = rdpdr.with_smartcard(device_id);
+                }
+                Ok(rdpdr)
+            }
+        }
+
         pub fn new(config: &Config, client_addr: &str) -> Result<Box<ClientConnector>, Box<IronRdpError>> {
             let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
 
-            Ok(Box::new(ClientConnector(
-                Some(ironrdp::connector::ClientConnector::new(
-                    config.connector.clone(),
-                    client_addr,
-                )),
-                None,
-            )))
+            let connector = ironrdp::connector::ClientConnector::new(config.connector.clone(), client_addr);
+            let mut client = ClientConnector(Some(connector), None, config.redirected_drives.clone(), false);
+            if !client.2.is_empty() {
+                let rdpdr = client.create_rdpdr(&config.connector.client_name, None)?;
+                client
+                    .0
+                    .as_mut()
+                    .ok_or_else(|| ValueConsumedError::for_item("connector"))?
+                    .attach_static_channel(rdpdr);
+            }
+
+            Ok(Box::new(client))
         }
 
         // FIXME: Naming: since this is not a builder pattern, use "attach"?
@@ -107,6 +174,10 @@ pub mod ffi {
         /// Announces a smartcard device. On Windows, calls are passed through to the local
         /// WinSCard service; elsewhere every call fails with `SCARD_E_NO_SERVICE`.
         ///
+        /// Preserves the drives selected in `ConfigBuilder`.
+        /// Drive IDs start at one, so the smartcard device ID must not match a selected drive.
+        /// Call before connecting.
+        ///
         /// Some WinSCard calls complete asynchronously: call `ActiveStage::poll_rdpdr_deferred`
         /// periodically to send their results to the server.
         pub fn with_static_channel_rdpdr(
@@ -114,27 +185,25 @@ pub mod ffi {
             computer_name: &str,
             smart_card_device_id: u32,
         ) -> Result<(), Box<IronRdpError>> {
-            let Some(connector) = self.0.take() else {
+            let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
+            if !matches!(
+                connector.state,
+                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
+            ) {
+                return Err("RDPDR must be attached before connecting".into());
+            }
+            if self.3 {
+                return Err("smartcard RDPDR is already configured".into());
+            }
 
-            #[cfg(windows)]
-            let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(
-                ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(Vec::new())
-                    .map_err(|error| {
-                        crate::error::GenericError(
-                            anyhow::Error::new(error).context("invalid RDPDR backend configuration"),
-                        )
-                    })?
-                    .with_smartcard(true)
-                    .build(),
-            );
-            #[cfg(not(windows))]
-            let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(ironrdp::rdpdr::NoopRdpdrBackend);
-
-            self.0 = Some(connector.with_static_channel(
-                ironrdp::rdpdr::Rdpdr::new(backend, computer_name.to_owned()).with_smartcard(smart_card_device_id),
-            ));
+            let rdpdr = self.create_rdpdr(computer_name, Some(smart_card_device_id))?;
+            self.0
+                .as_mut()
+                .ok_or_else(|| ValueConsumedError::for_item("connector"))?
+                .attach_static_channel(rdpdr);
+            self.3 = true;
 
             Ok(())
         }
@@ -501,11 +570,92 @@ mod tests {
         Ok(ClientConnector(
             Some(ironrdp::connector::ClientConnector::new(config.connector, client_addr)),
             None,
+            Vec::new(),
+            false,
         ))
     }
 
     fn capture_audio() -> Result<Box<NativeAudio>, &'static str> {
         NativeAudio::new(false, true, "", "", 0).map_err(|_| "audio settings")
+    }
+
+    fn rdpdr_channel_ptr(
+        connector: &ClientConnector,
+    ) -> Result<*const ironrdp::svc::StaticVirtualChannel, &'static str> {
+        connector
+            .0
+            .as_ref()
+            .and_then(|connector| connector.static_channels.get_by_type::<ironrdp::rdpdr::Rdpdr>())
+            .map(core::ptr::from_ref)
+            .ok_or("RDPDR channel")
+    }
+
+    // oracle: user request requires smartcard and native audio to interoperate in either attachment order
+    #[test]
+    fn smartcard_rdpdr_before_native_playback_is_preserved() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        connector
+            .with_static_channel_rdpdr("client", 42)
+            .map_err(|_| "attach RDPDR")?;
+        let rdpdr = rdpdr_channel_ptr(&connector)?;
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+
+        connector
+            .with_native_audio(&playback)
+            .map_err(|_| "attach native playback")?;
+
+        let inner = connector.0.as_ref().ok_or("connector")?;
+        assert_eq!(rdpdr, rdpdr_channel_ptr(&connector)?);
+        assert!(inner.config.enable_audio_playback);
+        assert!(
+            inner
+                .static_channels
+                .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
+                .is_some()
+        );
+        Ok(())
+    }
+
+    // oracle: user request requires smartcard and native audio to interoperate in either attachment order
+    #[test]
+    fn smartcard_rdpdr_after_native_playback_preserves_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+        connector
+            .with_native_audio(&playback)
+            .map_err(|_| "attach native playback")?;
+        let channel_count = connector.0.as_ref().ok_or("connector")?.static_channels.len();
+
+        connector
+            .with_static_channel_rdpdr("client", 42)
+            .map_err(|_| "attach RDPDR")?;
+
+        let inner = connector.0.as_ref().ok_or("connector")?;
+        assert!(rdpdr_channel_ptr(&connector).is_ok());
+        assert_eq!(channel_count, inner.static_channels.len());
+        assert!(inner.config.enable_audio_playback);
+        assert!(connector.1.is_some());
+        assert!(
+            inner
+                .static_channels
+                .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
+                .is_some()
+        );
+        Ok(())
+    }
+
+    // oracle: user request requires configured RDPDR channels not to be silently replaced
+    #[test]
+    fn duplicate_smartcard_rdpdr_is_rejected_without_replacing_the_channel() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        connector
+            .with_static_channel_rdpdr("client", 42)
+            .map_err(|_| "attach RDPDR")?;
+        let rdpdr = rdpdr_channel_ptr(&connector)?;
+
+        assert!(connector.with_static_channel_rdpdr("client", 42).is_err());
+        assert_eq!(rdpdr, rdpdr_channel_ptr(&connector)?);
+        Ok(())
     }
 
     // oracle: mutant drop pre-existing playback state when attaching capture

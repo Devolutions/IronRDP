@@ -27,6 +27,17 @@ internal static class SmokeTests
 
     internal static IEnumerable<(string Name, System.Action Run)> Cases()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            // oracle: user request limits drive redirection to Windows and requires unsupported platforms to fail explicitly
+            yield return ("drive redirection rejects unsupported platforms", () =>
+            {
+                var builder = ConfigBuilder.New();
+                var error = Throws<IronRdpException>(() => builder.AddRedirectedDrive("Shared", @"C:\shared", true));
+                True(error.Message.Contains("drive redirection is supported only on Windows"), $"error message: {error.Message}");
+            });
+        }
+
         // oracle: ffi/INTENT.md "Copying into caller buffers" (bytes past the image)
         yield return ("decoded image exposes its size and zeroed data", () =>
         {

@@ -553,6 +553,37 @@ public partial class ConfigBuilder
     }
 
     /// <exception cref="IronRdpException"></exception>
+    public void AddRedirectedDrive(string displayName, string rootPath, bool readOnly)
+    {
+        unsafe
+        {
+            if (displayName == null) throw new ArgumentNullException(nameof(displayName));
+            if (rootPath == null) throw new ArgumentNullException(nameof(rootPath));
+            byte[] displayNameBytes = Diplomat.Utf8.Clone(displayName);
+            byte[] rootPathBytes = Diplomat.Utf8.Clone(rootPath);
+            BorrowLease<Raw.ConfigBuilder>? selfLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                fixed (byte* displayNamePtr = displayNameBytes)
+                fixed (byte* rootPathPtr = rootPathBytes)
+                {
+                    var result = Raw.ConfigBuilder.AddRedirectedDrive(selfLease!.Ptr, new DiplomatSliceU8 { Ptr = displayNamePtr, Len = (nuint)displayNameBytes.Length }, new DiplomatSliceU8 { Ptr = rootPathPtr, Len = (nuint)rootPathBytes.Length }, readOnly);
+                    if (!result.IsOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    return;
+                }
+            }
+            finally
+            {
+                selfLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Config</c> allocated on Rust side.
     /// </returns>
