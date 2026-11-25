@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.9.0...ironrdp-cliprdr-v0.9.1)] - 2026-11-25
+
+### <!-- 4 -->Bug Fixes
+
+- Harden Windows native clipboard and file lock lifetime ([#2267](https://github.com/Devolutions/IronRDP/issues/2267)) ([3f9a1149b3](https://github.com/Devolutions/IronRDP/commit/3f9a1149b3f4d5d288106d1f8c502b5f4215276b)) 
+
+  Retain incoming locked file-list snapshots until the peer sends
+  \UnlockClipboardData\ per \[MS-RDPECLIP]\ §3.1.5.3.2 instead of expiring
+  them on upload inactivity (evicting the oldest lock and notifying
+  \on_unlock\ if \MAX_LOCKED_FILE_LISTS\ is exceeded), and reject unknown
+  or released lock IDs instead of falling back to the current unlocked
+  clipboard.
+  
+  On Windows, omit synthesized \CF_DIBV5\ when \CF_DIB\ precedes it in
+  \EnumClipboardFormats\ to avoid Windows' corrupting \BI_BITFIELDS\
+  DIB-to-DIBV5 conversion, fail displaced \FormatDataRequest\ entries when
+  retry coalescing replaces a deferred event or a newer
+  \FormatDataRequest\ arrives, initialize \window_is_active\ from the
+  foreground window process so background clipboard hosts report clipboard
+  changes without waiting for an activation message, and clear
+  \SetLastError(ERROR_SUCCESS)\ before registering delayed rendering with
+  \SetClipboardData(format, None)\.
+  
+  ---------
+
+- Keep a download's lock across local copies ([#2399](https://github.com/Devolutions/IronRDP/issues/2399)) ([6b32516dde](https://github.com/Devolutions/IronRDP/commit/6b32516dde360b2dadac74db8a7ab72d5b8ade2c)) 
+
+  Initiating a local file copy released every outgoing lock, so a download
+  still pulling files from the remote failed as soon as the user copied
+  files locally. Locks exist to keep File Stream data available after a
+  clipboard change ([MS-RDPECLIP] 2.2.4.1).
+  
+  A lock is now kept when a FileContentsRequest under it is still
+  outstanding, or when its last request or response was within the last 10
+  seconds, which covers the gap a download leaves between two sequential
+  requests. A kept lock expires without being reported through
+  `on_outgoing_locks_expired`, which is for a remote clipboard change and
+  on which backends such as the daemon abort the download. The timeout
+  sweep releases it, and reports it through `on_outgoing_locks_cleared`,
+  once nothing under it is outstanding and it has been quiet for 10
+  seconds; the transfer timeout and the maximum lock lifetime still bound
+  it. Idle locks are still unlocked before the FormatList.
+  
+  A FileContentsResponse now also counts as activity on its lock, so
+  inactivity is measured from a download's last response rather than its
+  last request.
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.8.0...ironrdp-cliprdr-v0.9.0)] - 2026-10-27
 
 ### <!-- 7 -->Build

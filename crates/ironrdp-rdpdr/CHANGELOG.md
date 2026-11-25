@@ -6,6 +6,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.9.0...ironrdp-rdpdr-v0.9.1)] - 2026-11-25
+
+### <!-- 1 -->Features
+
+- Send UserLoggedOn and propagate server device-removal errors ([#2440](https://github.com/Devolutions/IronRDP/issues/2440)) ([2e65d08181](https://github.com/Devolutions/IronRDP/commit/2e65d08181c59f13af7c6783df244b59ce2b0aa5)) 
+
+  Send `PAKID_CORE_USER_LOGGEDON` after `ClientCoreCapabilityResponse`
+  when the client general capability set advertises
+  `RDPDR_USER_LOGGEDON_PDU` (`[MS-RDPEFS]` §3.3.5.1.5) so clients that
+  wait for user logon before announcing drives can complete redirection.
+  
+  Add `RdpdrServerBackend::max_message_size`, `try_on_device_remove`, and
+  `on_reinitialize` so server backends can bound static-channel reassembly
+  and fail the channel before tracked device state is discarded on removal
+  or duplicate initialization.
+  
+  Expose `CoreCapability::supports_user_logged_on`,
+  `DeviceAnnounceHeader::device_type`, and
+  `ClientDriveSetInformationResponse::{device_io_reply, length}` in
+  `ironrdp_rdpdr::pdu::efs`.
+  
+  ---------
+
+- Add native audio playback ([#2480](https://github.com/Devolutions/IronRDP/issues/2480)) ([e62f01c824](https://github.com/Devolutions/IronRDP/commit/e62f01c824a0f450bd3267879a3d3682bfb1c1a2)) 
+
+  Expose native RDPSND playback through the FFI and .NET bindings so
+  clients can play remote audio on a selected local output device.
+  Register static and dynamic playback channels, and join RDPDR without
+  redirected devices when it is absent so Windows servers can start
+  playback. Stop playback on demand or when the active stage is disposed.
+  
+  Linux builds require ALSA development headers and the native library
+  requires `libasound` at runtime. Android retains its existing API
+  baseline and does not support native playback.
+
+### <!-- 4 -->Bug Fixes
+
+- Announce drive names as 8-bit characters ([#2342](https://github.com/Devolutions/IronRDP/issues/2342)) ([4cd9d45060](https://github.com/Devolutions/IronRDP/commit/4cd9d45060df01c731f5d814537ecd86d425190d)) 
+
+  Windows shows a redirected drive under the first letter of its name: on
+  Windows 11 (build 26300), a drive named `trd rw` is `\\tsclient\t`, and
+  `\\tsclient\trd rw` is not found; Windows Server 2022 and 2025 do the
+  same. The client announces the drive's full name in DeviceData as a
+  null-terminated UTF-16 string, as MS-RDPEFS 2.2.3.1 asks with
+  DRIVE_CAPABILITY_VERSION_02, but Windows reads the field as 8-bit
+  characters, so the zero byte after the first letter ends the name.
+  
+  The name now goes as 8-bit characters, null-terminated. FreeRDP's client
+  writes it this way too, also with DRIVE_CAPABILITY_VERSION_02, and so
+  does rdesktop's. Characters outside ASCII become `_`, and so do a NUL,
+  which would end the name early, and the characters MS-RDPEFS 2.2.1.3
+  forbids in PreferredDosName (`<`, `>`, `"`, `/`, `\`, `|`, and a colon
+  before the end), for which Windows refuses an 8-bit name; FreeRDP
+  replaces those too. A trailing colon stays: a drive announced as `C:` is
+  `\\tsclient\C`. Names that differ only outside ASCII are announced
+  alike. A server that decodes the field as UTF-16, as the specification
+  says, would misread the name; xrdp names drives from PreferredDosName,
+  which is unchanged.
+
+- Announce drive names outside ASCII as UTF-8 ([#2383](https://github.com/Devolutions/IronRDP/issues/2383)) ([16866d1272](https://github.com/Devolutions/IronRDP/commit/16866d127221faa28605fd8e95592beea4e68cb7)) 
+
+  A redirected drive whose name has characters outside ASCII was announced
+  with each of them replaced by `_`, so `їжачок` reached the server as
+  `______`, and names differing only outside ASCII, such as `Звіт` and
+  `Опис`, collided. Windows reads DeviceData as 8-bit characters, and
+  FreeRDP fills it with the UTF-8 bytes of the name: on Windows Server
+  2025, FreeRDP 3.32.1 with `/drive:їжачок,…` lists the drive as "їжачок
+  on \<client\>", while the same name sent as UTF-16, as `ironrdp-rdpdr`
+  0.9.0 does, is refused with `STATUS_UNSUCCESSFUL` on Windows Server 2019
+  and 2025.
+  
+  A character outside ASCII now goes as its UTF-8 bytes. None of those
+  bytes is zero or ASCII, so the name stays null-terminated and cannot
+  gain a character that MS-RDPEFS 2.2.1.3 forbids; those characters, a
+  colon before the end and NUL are still replaced with `_`.
+  PreferredDosName is unchanged. A server that decodes DeviceData in a
+  code page other than UTF-8 would show such a name as mojibake instead of
+  underscores.
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.8.0...ironrdp-rdpdr-v0.9.0)] - 2026-10-27
 
 ### <!-- 4 -->Bug Fixes
