@@ -2508,6 +2508,77 @@ fn a_shared_directory_that_names_no_directory_serves_nothing_beside_a_drive_with
     assert_eq!(response_status(&served), NtStatus::SUCCESS);
 }
 
+/// A root whose path names no directory leaves the directory of no root undetermined, in whichever order the roots are given.
+/// A root given through a symbolic link that lies outside every root is therefore served beside it, as beside a root that resolves.
+/// Each case returns a path that the walk resolves on the filesystem and finds to name no directory.
+// oracle: mutant a root path that names no directory made the roots reached through a link unusable
+#[rstest]
+// `src` exists in the package root, the working directory of the tests, so the path fails only for being relative.
+#[case::a_relative_path(|_: &Fixture| PathBuf::from("src"))]
+#[case::a_missing_directory(|fixture: &Fixture| fixture.sandbox.join("missing"))]
+#[case::a_file(|fixture: &Fixture| {
+    std::fs::write(fixture.sandbox.join("file.txt"), b"file").expect("write file");
+    fixture.sandbox.join("file.txt")
+})]
+#[case::a_link_to_itself(|fixture: &Fixture| {
+    link(Path::new("loop"), &fixture.sandbox.join("loop"));
+    fixture.sandbox.join("loop")
+})]
+#[case::a_name_longer_than_a_directory_holds(|fixture: &Fixture| fixture.sandbox.join("n".repeat(256)))]
+fn a_root_given_through_a_link_outside_every_root_is_served_beside_a_root_that_names_no_directory(
+    #[case] root: fn(&Fixture) -> PathBuf,
+    #[values([FIRST, SECOND], [SECOND, FIRST])] order: [u32; 2],
+) {
+    let fixture = Fixture::new();
+    let alias = fixture.sandbox.join("alias");
+    link(&fixture.share, &alias);
+    let mut backend = backend_with_roots_in_order(&[alias, root(&fixture)], order);
+
+    let through_the_root_that_names_no_directory = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\", CreateDisposition::FILE_OPEN),
+    );
+    let _ = create_with(
+        &mut backend,
+        create_request_on(FIRST, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(
+        response_status(&through_the_root_that_names_no_directory),
+        NOTHING_SERVED
+    );
+    assert_eq!(names_in(&fixture.share), ["new.txt"]);
+}
+
+/// A root that may not be read names no directory a drive could serve, so it too leaves a root given through a link outside every root served.
+/// Run as a user that no permission stops, the test proves nothing.
+// oracle: mutant a root that may not be read counted as a directory that could not be determined
+#[test]
+fn a_root_given_through_a_link_outside_every_root_is_served_beside_a_root_that_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new();
+    let (alias, unreadable) = (fixture.sandbox.join("alias"), fixture.sandbox.join("unreadable"));
+    link(&fixture.share, &alias);
+    std::fs::create_dir(&unreadable).expect("create directory");
+    let set_mode = |mode| {
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(mode)).expect("set permissions");
+    };
+
+    set_mode(0o300);
+    let mut backend = NixRdpdrBackend::default()
+        .with_drive_root(FIRST, utf8(&alias))
+        .with_drive_root(SECOND, utf8(&unreadable));
+    // The fixture lists the directory to remove it.
+    set_mode(0o700);
+
+    let _ = create_with(
+        &mut backend,
+        create_request(r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    assert_eq!(names_in(&fixture.share), ["new.txt"]);
+}
+
 /// Beside a drive with its own root, the shared directory is checked like a root: neither may be reached through a link inside the other.
 /// Each case returns the shared directory, which `FIRST` serves, and the root of `SECOND`, with the device that is served nothing.
 // oracle: mutant the shared directory left out of the roots a followed link is checked against
