@@ -491,12 +491,9 @@ impl WasmClipboard {
             }
         };
 
-        if response.is_error() {
-            // Format is not available anymore.
-            return Ok(());
-        }
-
         let item = match pending_format {
+            // Format is not available anymore; the rest of the list is still fetched.
+            _ if response.is_error() => None,
             ClipboardFormatId::CF_UNICODETEXT => match response.to_unicode_string() {
                 Ok(text) => Some(ClipboardItem::new_text(MIME_TEXT, text)),
                 Err(err) => {
@@ -1753,6 +1750,39 @@ mod tests {
                 );
             }
             other => panic!("Expected deferred SendInitiatePaste for file format, got: {other:?}"),
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn test_failed_format_still_fetches_the_rest() {
+        // oracle: mutant returning early on a failed Format Data Response, which drops the rest of the copy
+        let (mut clipboard, mut rx) = inert_clipboard();
+        let formats = vec![
+            ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+            ClipboardFormat::new(ClipboardFormatId::CF_DIB),
+        ];
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteClipboardChanged(formats))
+            .unwrap();
+        let first = match rx.try_recv() {
+            Ok(RdpInputEvent::Cliprdr(ClipboardMessage::SendInitiatePaste(format))) => format,
+            other => panic!("Expected SendInitiatePaste, got: {other:?}"),
+        };
+
+        clipboard
+            .process_event(WasmClipboardBackendMessage::RemoteDataResponse(
+                FormatDataResponse::new_error(),
+            ))
+            .unwrap();
+        let other = if first == ClipboardFormatId::CF_UNICODETEXT {
+            ClipboardFormatId::CF_DIB
+        } else {
+            ClipboardFormatId::CF_UNICODETEXT
+        };
+        match rx.try_recv() {
+            Ok(RdpInputEvent::Cliprdr(ClipboardMessage::SendInitiatePaste(format))) => assert_eq!(format, other),
+            other => panic!("Expected SendInitiatePaste for the remaining format, got: {other:?}"),
         }
     }
 
