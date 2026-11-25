@@ -64,6 +64,7 @@ A root that names no directory does not affect the other roots: that covers a pa
 A root whose directory may be searched but not read holds nothing open, and the other roots are still checked against that directory, because a server may have been served it while it could be read.
 A root that fails to resolve for any other reason, for example because the process has run out of descriptors or may not search a directory on the path, may name a directory that a server was served before, and a link anywhere may then lie in or below it.
 While such a root is configured, every root reached through a symbolic link or a `..` step is unusable, and the roots whose paths only descend are served.
+One root that stays undetermined, such as a folder the process is not permitted to search, therefore makes every root reached through a link unusable, which on macOS includes every root given under `/tmp`, `/var` or `/etc`.
 A drive with an unusable root is still configured and announced, but is served nothing: a create through it fails as it does when the shared directory cannot be opened.
 The other drives are served, and a warning is logged when a root becomes unusable.
 Roots are checked against each other in whichever order they are given.
@@ -114,6 +115,8 @@ These are assumed, and nothing checks them:
 - No other backend with another configuration lets a server write to a directory that a root path leads through.
   A root path is trusted as local configuration wherever it lies outside the roots of its own backend.
 - No server of another connection changes the directories on a root path while the root is resolved.
+- A root path that resolved for an earlier backend still resolves for a later one, or fails in a way that leaves its directory undetermined: no link on it is removed and no volume on it unmounted while the root stays configured.
+  A root that comes to name nothing is no longer checked against, so a root reached through a link below the directory it named would be served.
 
 ## Windows printers
 
