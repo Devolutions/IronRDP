@@ -878,7 +878,7 @@ fn rename_onto_another_spelling_of_a_link_in_another_directory_removes_the_sourc
 }
 
 /// A rename that cannot remove the source link fails without giving the other link the spelling it asked for.
-// oracle: regression #2525
+// oracle: mutant the kept link is respelled before a refused unlink of the source
 #[cfg(target_os = "macos")]
 #[test]
 fn a_refused_rename_onto_another_spelling_of_another_link_changes_nothing() {
@@ -894,11 +894,10 @@ fn a_refused_rename_onto_another_spelling_of_another_link_changes_nothing() {
     );
     let mut backend = fixture.backend();
     let file_id = create(&mut backend, r"\source\ab.txt", CreateDisposition::FILE_OPEN);
-    // An immutable directory keeps its entries whoever runs the tests.
-    nix::unistd::chflags(&source, nix::sys::stat::FileFlag::UF_IMMUTABLE).expect("make source directory immutable");
+    let immutable = Immutable::new(&source);
 
     let response = set_information(&mut backend, file_id, rename_to(r"\target\Q.TXT", false));
-    nix::unistd::chflags(&source, nix::sys::stat::FileFlag::empty()).expect("make source directory mutable");
+    drop(immutable);
 
     assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
     assert_eq!(stored_names(&source), ["ab.txt"]);
@@ -921,11 +920,10 @@ fn rename_onto_another_spelling_of_a_link_that_cannot_be_respelled_removes_the_s
     );
     let mut backend = fixture.backend();
     let file_id = create(&mut backend, r"\ab.txt", CreateDisposition::FILE_OPEN);
-    // An immutable directory keeps its entries whoever runs the tests.
-    nix::unistd::chflags(&target, nix::sys::stat::FileFlag::UF_IMMUTABLE).expect("make target directory immutable");
+    let immutable = Immutable::new(&target);
 
     let response = set_information(&mut backend, file_id, rename_to(r"\target\Q.TXT", false));
-    nix::unistd::chflags(&target, nix::sys::stat::FileFlag::empty()).expect("make target directory mutable");
+    drop(immutable);
 
     assert_eq!(response_status(&response), NtStatus::SUCCESS);
     assert_eq!(stored_names(&fixture.share), ["target"]);
@@ -1961,6 +1959,25 @@ fn stored_names(directory: &Path) -> Vec<String> {
         .collect::<Vec<_>>();
     names.sort();
     names
+}
+
+/// Keeps the entries of a directory as they are until dropped, whoever runs the tests, since the immutable flag binds root as well.
+#[cfg(target_os = "macos")]
+struct Immutable<'a>(&'a Path);
+
+#[cfg(target_os = "macos")]
+impl<'a> Immutable<'a> {
+    fn new(directory: &'a Path) -> Self {
+        nix::unistd::chflags(directory, nix::sys::stat::FileFlag::UF_IMMUTABLE).expect("make directory immutable");
+        Self(directory)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Immutable<'_> {
+    fn drop(&mut self) {
+        let _ = nix::unistd::chflags(self.0, nix::sys::stat::FileFlag::empty());
+    }
 }
 
 /// Queries `pattern` and then continues until enumeration ends, returning the names in order and the final status.
