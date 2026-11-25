@@ -344,7 +344,7 @@ pub struct Config {
     pub enable_audio_capture: bool,
     /// If true, the server is asked to play audio on its own console and `INFO_REMOTECONSOLEAUDIO`
     /// is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu), so nothing is redirected
-    /// to the client. Meant for use without client audio playback.
+    /// to the client. Takes precedence over `enable_audio_playback`: `INFO_NOAUDIOPLAYBACK` is also set.
     pub play_audio_on_server: bool,
     pub performance_flags: PerformanceFlags,
 

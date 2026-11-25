@@ -2377,7 +2377,9 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }
 
-    if !config.enable_audio_playback {
+    // Playing on the server and playing on the client are mutually exclusive; like other clients,
+    // remote console audio is always sent together with INFO_NOAUDIOPLAYBACK.
+    if !config.enable_audio_playback || config.play_audio_on_server {
         flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
@@ -2603,6 +2605,7 @@ mod tests {
         let client_info =
             create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
         assert!(client_info.flags.contains(ClientInfoFlags::REMOTE_CONSOLE_AUDIO));
+        assert!(client_info.flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
     }
 
     /// A plain client [`Config`] for tests to change what they look at.
