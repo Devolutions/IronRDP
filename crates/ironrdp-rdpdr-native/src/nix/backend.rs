@@ -1000,7 +1000,7 @@ pub(crate) fn set_information(
 /// An existing `to` is a collision unless `replace_if_exists` is set.
 /// A directory `to`, or one with open handles, is never replaced, and one marked for deletion fails with STATUS_DELETE_PENDING.
 /// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision, and a `to` naming another hard link of the source removes the source link.
-/// In one directory the two are told apart by the names their entries are stored under, and both links stay where a stored name cannot be told, as for another spelling in a case-insensitive directory on Linux.
+/// In one directory the two are told apart by the names their entries are stored under, and both links stay where a stored name cannot be told, as for another spelling in a case-insensitive directory on Linux, or one that differs in normalization on macOS.
 /// The link that stays takes the spelling of `to` where its stored name can be told.
 /// A source name kept that way still names the file, so a later create of that name opens or overwrites it.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
@@ -1040,24 +1040,24 @@ fn rename(
             // The rename goes ahead then, which at most changes the spelling of a link and never removes one.
             let same_directory =
                 FileIdentity::of(&fstat(from_parent.as_fd()).map_err(status_from_errno)?) == to_parent_identity;
-            let is_another_link = source.st_nlink >= 2
-                && (!same_directory
-                    || from_name != to_name
-                        && {
-                            let from_stored = stored_name(from_parent.as_fd(), from_name).map_err(status_from_errno)?;
-                            let to_stored = stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?;
-                            matches!((from_stored, to_stored), (Some(from_stored), Some(to_stored)) if from_stored != to_stored)
-                        });
-            if is_another_link {
-                // [MS-FSA] names the link that stays as `to` spells it.
-                if let Some(to_stored) = stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?
-                    && to_stored != to_name.as_bytes()
-                {
-                    renameat(to_parent.as_fd(), to_stored.as_slice(), to_parent.as_fd(), to_name)
-                        .map_err(status_from_errno)?;
+            if source.st_nlink >= 2 && (!same_directory || from_name != to_name) {
+                let to_stored = stored_name(to_parent.as_fd(), to_name).map_err(status_from_errno)?;
+                let is_another_link = !same_directory
+                    || {
+                        let from_stored = stored_name(from_parent.as_fd(), from_name).map_err(status_from_errno)?;
+                        matches!((&from_stored, &to_stored), (Some(from_stored), Some(to_stored)) if from_stored != to_stored)
+                    };
+                if is_another_link {
+                    // [MS-FSA] names the link that stays as `to` spells it.
+                    if let Some(to_stored) = to_stored
+                        && to_stored != to_name.as_bytes()
+                    {
+                        renameat(to_parent.as_fd(), to_stored.as_slice(), to_parent.as_fd(), to_name)
+                            .map_err(status_from_errno)?;
+                    }
+                    unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
+                    return Ok(to_ancestors);
                 }
-                unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
-                return Ok(to_ancestors);
             }
         }
         Ok(_) if !replace_if_exists => return Err(NtStatus::OBJECT_NAME_COLLISION),

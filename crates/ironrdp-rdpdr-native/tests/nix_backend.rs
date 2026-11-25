@@ -854,6 +854,29 @@ fn rename_onto_another_spelling_of_another_link_removes_the_source() {
     assert_eq!(stored_names(&fixture.share), ["Q.TXT"]);
 }
 
+/// Another spelling of a link in another directory names that link, so the source goes and the link that stays takes that spelling.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_onto_another_spelling_of_a_link_in_another_directory_removes_the_source() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    std::fs::write(fixture.share.join("ab.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("ab.txt"), fixture.share.join("dir/q.txt")).expect("link file");
+    assert!(
+        fixture.share.join("dir/Q.TXT").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\ab.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\dir\Q.TXT", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(stored_names(&fixture.share), ["dir"]);
+    assert_eq!(stored_names(&fixture.share.join("dir")), ["Q.TXT"]);
+}
+
 /// A rename onto another link of the file frees the source name, so a file that takes it shares nothing with the renamed one, whatever spelling its handles were opened under.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[cfg(target_os = "macos")]
