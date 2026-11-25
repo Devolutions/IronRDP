@@ -3,6 +3,7 @@ use ironrdp_pdu::gcc;
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 
 mod autodetect;
+mod credssp_auth;
 mod debug_redaction;
 mod display_data;
 mod early_capabilities;

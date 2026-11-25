@@ -16,6 +16,52 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct KerberosConfig(pub ironrdp::connector::credssp::KerberosConfig);
 
+    impl KerberosConfig {
+        /// Kerberos with the KDC found from the user's realm, which comes from the domain or the user principal
+        /// name in the connector's credentials.
+        ///
+        /// The client computer name sent to the KDC is the connector's client name.
+        pub fn new() -> Box<KerberosConfig> {
+            Box::new(KerberosConfig(ironrdp::connector::credssp::KerberosConfig {
+                kdc_resolution: ironrdp::connector::credssp::KdcResolution::KdcUrl(None),
+                hostname: String::new(),
+            }))
+        }
+
+        /// Kerberos with an explicit KDC: `tcp://dc.example.com:88`, or a KDC proxy ([MS-KKDCP]) such as
+        /// `https://gateway.example.com/KdcProxy`. The .NET transport carries `tcp`, `http` and `https`.
+        ///
+        /// The client computer name sent to the KDC is the connector's client name.
+        ///
+        /// [MS-KKDCP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5bcebb8d-b747-4ee5-9453-428aec1c5c38
+        pub fn new_with_kdc_url(kdc_url: &str) -> Result<Box<KerberosConfig>, Box<IronRdpError>> {
+            let config =
+                ironrdp::connector::credssp::KerberosConfig::new_with_kdc_url(Some(kdc_url.to_owned()), String::new())?;
+            if let ironrdp::connector::credssp::KdcResolution::KdcUrl(Some(url)) = &config.kdc_resolution
+                && !matches!(url.scheme(), "tcp" | "http" | "https")
+            {
+                return Err(ironrdp::connector::general_err!("unsupported KDC URL scheme").into());
+            }
+            Ok(Box::new(KerberosConfig(config)))
+        }
+    }
+
+    /// The security package CredSSP authenticates with. Paired with an optional [`KerberosConfig`].
+    pub enum CredsspPackage {
+        /// NTLM only. Takes no Kerberos configuration.
+        Ntlm,
+        /// SPNEGO, preferring Kerberos and allowing NTLM.
+        ///
+        /// Without a Kerberos configuration, the KDC is looked up from the user's realm when the exchange starts, and
+        /// NTLM is used when none is found. With one, such as [`KerberosConfig::new`], Kerberos is used from the
+        /// start, and a KDC that cannot be reached fails the exchange instead of falling back to NTLM. Use
+        /// [`CredsspPackage::Kerberos`] to rule out NTLM entirely.
+        Negotiate,
+        /// SPNEGO restricted to Kerberos: NTLM is never negotiated or used as a fallback. Without a Kerberos
+        /// configuration, the KDC is found from the user's realm, as with [`KerberosConfig::new`].
+        Kerberos,
+    }
+
     #[diplomat::opaque_mut]
     pub struct CredsspSequence(pub ironrdp::connector::credssp::CredsspSequence);
 
@@ -53,7 +99,8 @@ pub mod ffi {
             connector: &ClientConnector,
             server_name: &str,
             server_public_key: &[u8],
-            kerbero_configs: Option<&KerberosConfig>,
+            package: CredsspPackage,
+            kerberos_config: Option<&KerberosConfig>,
         ) -> Result<Box<CredsspSequenceInitResult>, Box<IronRdpError>> {
             let Some(connector) = connector.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
@@ -65,7 +112,8 @@ pub mod ffi {
                     server_name,
                     server_public_key,
                     selected_protocol,
-                    kerbero_configs,
+                    package,
+                    kerberos_config,
                 ),
                 _ => Err(ironrdp::connector::general_err!("invalid connector state for CredSSP sequence").into()),
             }
@@ -80,7 +128,8 @@ pub mod ffi {
             server_name: &str,
             server_public_key: &[u8],
             selected_protocol: u32,
-            kerbero_configs: Option<&KerberosConfig>,
+            package: CredsspPackage,
+            kerberos_config: Option<&KerberosConfig>,
         ) -> Result<Box<CredsspSequenceInitResult>, Box<IronRdpError>> {
             let Some(connector) = connector.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
@@ -93,7 +142,8 @@ pub mod ffi {
                 server_name,
                 server_public_key,
                 selected_protocol,
-                kerbero_configs,
+                package,
+                kerberos_config,
             )
         }
 
@@ -102,15 +152,32 @@ pub mod ffi {
             server_name: &str,
             server_public_key: &[u8],
             selected_protocol: ironrdp::pdu::nego::SecurityProtocol,
-            kerbero_configs: Option<&KerberosConfig>,
+            package: CredsspPackage,
+            kerberos_config: Option<&KerberosConfig>,
         ) -> Result<Box<CredsspSequenceInitResult>, Box<IronRdpError>> {
+            use ironrdp::connector::credssp::CredsspAuth;
+
+            let kerberos_config = kerberos_config.map(|config| ironrdp::connector::credssp::KerberosConfig {
+                hostname: connector.config.client_name.clone(),
+                ..config.0.clone()
+            });
+            let auth = match package {
+                CredsspPackage::Ntlm if kerberos_config.is_some() => {
+                    return Err(
+                        ironrdp::connector::general_err!("the NTLM package takes no Kerberos configuration").into(),
+                    );
+                }
+                CredsspPackage::Ntlm => CredsspAuth::Ntlm,
+                CredsspPackage::Negotiate => CredsspAuth::Negotiate(kerberos_config),
+                CredsspPackage::Kerberos => CredsspAuth::Kerberos(kerberos_config),
+            };
             let (credssp_sequence, ts_request) = ironrdp::connector::credssp::CredsspSequence::init(
                 connector.config.credentials.clone(),
                 connector.config.domain.as_deref(),
                 selected_protocol,
                 server_name.into(),
                 server_public_key.to_owned(),
-                kerbero_configs.map(|config| config.0.clone()),
+                auth,
             )?;
 
             Ok(Box::new(CredsspSequenceInitResult {

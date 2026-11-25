@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use ironrdp_connector::credssp::{CredsspSequence, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspAuth, CredsspSequence, KerberosConfig};
 use ironrdp_connector::remote_guard::{
     Backend, Context, KERBEROS, MAX_MESSAGE_SIZE, NTLM, PROFILE, STATUS_ACCESS_DENIED, STATUS_INVALID_HANDLE,
     STATUS_INVALID_PARAMETER, STATUS_NOT_SUPPORTED, WRAP_OVERHEAD, asn1_output, bytes, empty_ntlm_response, key,
@@ -159,7 +159,9 @@ fn rcg_ntlm_is_explicit_opt_in_and_keeps_kerberos_negotiation() {
             &connector,
             "server.example.test".into(),
             vec![1],
-            Some(KerberosConfig::new_with_kdc_url(None, "test-client".into()).unwrap()),
+            CredsspAuth::Negotiate(Some(
+                KerberosConfig::new_with_kdc_url(None, "test-client".into()).unwrap(),
+            )),
         )
         .unwrap();
         assert!(sequence.remote_guard_enabled());
@@ -208,7 +210,9 @@ fn rcg_cannot_handoff_a_different_ntlm_policy() {
             &source,
             "server.example.test".into(),
             vec![1],
-            Some(KerberosConfig::new_with_kdc_url(None, "test-client".into()).unwrap()),
+            CredsspAuth::Negotiate(Some(
+                KerberosConfig::new_with_kdc_url(None, "test-client".into()).unwrap(),
+            )),
         )
         .unwrap();
         assert_eq!(sequence.__test_remote_guard_ntlm_enabled(), enabled);
@@ -338,13 +342,16 @@ fn rcg_requires_kerberos_config_and_cannot_complete_an_unfinished_exchange() {
     connector.state = ClientConnectorState::Credssp {
         selected_protocol: nego::SecurityProtocol::HYBRID_EX,
     };
-    assert!(CredsspSequence::init_for_connector(&connector, "server.example.test".into(), vec![1], None).is_err());
+    assert!(
+        CredsspSequence::init_for_connector(&connector, "server.example.test".into(), vec![1], CredsspAuth::Ntlm)
+            .is_err()
+    );
     assert!(
         CredsspSequence::init_for_connector(
             &connector,
             "server.example.test".into(),
             vec![1],
-            Some(KerberosConfig::new_with_iakerb("client".into())),
+            CredsspAuth::Negotiate(Some(KerberosConfig::new_with_iakerb("client".into()))),
         )
         .is_err()
     );
@@ -352,7 +359,7 @@ fn rcg_requires_kerberos_config_and_cannot_complete_an_unfinished_exchange() {
         &connector,
         "server.example.test".into(),
         vec![1],
-        Some(KerberosConfig::new_with_kdc_url(None, "client".into()).unwrap()),
+        CredsspAuth::Negotiate(Some(KerberosConfig::new_with_kdc_url(None, "client".into()).unwrap())),
     )
     .unwrap();
     assert!(sequence.remote_guard_enabled());
@@ -386,7 +393,7 @@ fn rcg_sequence() -> CredsspSequence {
         &rcg,
         "server.example.test".into(),
         vec![1],
-        Some(KerberosConfig::new_with_kdc_url(None, "client".into()).unwrap()),
+        CredsspAuth::Negotiate(Some(KerberosConfig::new_with_kdc_url(None, "client".into()).unwrap())),
     )
     .unwrap()
     .0

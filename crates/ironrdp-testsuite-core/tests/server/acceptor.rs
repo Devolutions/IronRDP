@@ -12,7 +12,7 @@ use ironrdp_acceptor::{
 };
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
-use ironrdp_connector::credssp::CredsspSequence;
+use ironrdp_connector::credssp::{CredsspAuth, CredsspSequence};
 use ironrdp_connector::sspi::credssp::{ClientMode, ClientState, CredSspClient, CredSspMode, NStatusCode, TsRequest};
 use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
 use ironrdp_connector::sspi::ntlm::NtlmConfig;
@@ -1955,7 +1955,7 @@ async fn credssp_authorization_uses_selected_protocol(
         protocol,
         "server.example.com".to_owned().into(),
         public_key.clone(),
-        None,
+        CredsspAuth::Ntlm,
     )
     .unwrap();
     let first_message = client_credssp_message(&mut client, request);
@@ -2062,7 +2062,7 @@ async fn credssp_failed_logon_is_reported_as_logon_failure(
         protocol,
         "server.example.com".to_owned().into(),
         public_key.clone(),
-        None,
+        CredsspAuth::Ntlm,
     )
     .unwrap();
     let first_message = client_credssp_message(&mut client, request);
@@ -2320,7 +2320,7 @@ async fn credssp_preserves_explicit_domain_when_username_contains_at_sign() {
         protocol,
         "server.example.com".to_owned().into(),
         public_key.clone(),
-        None,
+        CredsspAuth::Ntlm,
     )
     .unwrap();
     let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
@@ -2399,7 +2399,7 @@ fn native_negotiate_message() -> Vec<u8> {
         SecurityProtocol::HYBRID_EX,
         "localhost".to_owned().into(),
         vec![0x42; 32],
-        None,
+        CredsspAuth::Ntlm,
     )
     .unwrap();
     client_credssp_message(&mut client, request)
@@ -2506,7 +2506,7 @@ async fn native_test_exchange(
         SecurityProtocol::HYBRID_EX,
         "localhost".to_owned().into(),
         client_public_key,
-        None,
+        CredsspAuth::Ntlm,
     )
     .unwrap();
     let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {

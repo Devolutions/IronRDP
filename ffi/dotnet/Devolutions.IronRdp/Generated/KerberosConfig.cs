@@ -57,6 +57,40 @@ public partial class KerberosConfig
         }
     }
 
+    /// <returns>
+    /// A <c>KerberosConfig</c> allocated on Rust side.
+    /// </returns>
+    public static KerberosConfig New()
+    {
+        unsafe
+        {
+            Raw.KerberosConfig* result = Raw.KerberosConfig.New();
+            return new KerberosConfig(result);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>KerberosConfig</c> allocated on Rust side.
+    /// </returns>
+    public static KerberosConfig NewWithKdcUrl(string kdcUrl)
+    {
+        unsafe
+        {
+            if (kdcUrl == null) throw new ArgumentNullException(nameof(kdcUrl));
+            byte[] kdcUrlBytes = Diplomat.Utf8.Clone(kdcUrl);
+            fixed (byte* kdcUrlPtr = kdcUrlBytes)
+            {
+                var result = Raw.KerberosConfig.NewWithKdcUrl(new DiplomatSliceU8 { Ptr = kdcUrlPtr, Len = (nuint)kdcUrlBytes.Length });
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return new KerberosConfig(result.Ok);
+            }
+        }
+    }
+
     private void Cleanup()
     {
         unsafe
