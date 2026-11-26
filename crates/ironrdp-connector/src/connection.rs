@@ -2377,8 +2377,13 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }
 
-    if !config.enable_audio_playback {
-        flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
+    // Remote console audio is always sent together with INFO_NOAUDIOPLAYBACK, as other clients do.
+    match config.audio_playback_mode() {
+        crate::AudioPlaybackMode::Client => {}
+        crate::AudioPlaybackMode::Server => {
+            flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK | ClientInfoFlags::REMOTE_CONSOLE_AUDIO;
+        }
+        crate::AudioPlaybackMode::Disabled => flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK,
     }
 
     if config.enable_audio_capture {
@@ -2508,6 +2513,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
+            audio_playback_mode: None,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2571,6 +2577,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: true,
             enable_audio_capture: true,
+            audio_playback_mode: None,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2636,6 +2643,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
+            audio_playback_mode: None,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -2743,6 +2751,7 @@ mod tests {
             autologon: false,
             enable_audio_playback: false,
             enable_audio_capture: false,
+            audio_playback_mode: None,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),

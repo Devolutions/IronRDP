@@ -2,6 +2,7 @@ use ironrdp_connector::{Credentials, DesktopSize};
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 
+mod audio_playback;
 mod autodetect;
 mod credssp_auth;
 mod debug_redaction;
@@ -51,6 +52,7 @@ fn test_config() -> ironrdp_connector::Config {
         autologon: false,
         enable_audio_playback: false,
         enable_audio_capture: false,
+        audio_playback_mode: None,
         license_cache: None,
         compression_type: None,
         enable_server_pointer: false,

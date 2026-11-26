@@ -190,6 +190,20 @@ impl Credentials {
     }
 }
 
+/// Where the server plays audio, as in the `audiomode` `.rdp` property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioPlaybackMode {
+    /// Redirect audio to the client (`audiomode:i:0`).
+    #[default]
+    Client,
+    /// Leave audio playing on the server console (`audiomode:i:1`).
+    ///
+    /// Sets `INFO_REMOTECONSOLEAUDIO` together with `INFO_NOAUDIOPLAYBACK`.
+    Server,
+    /// Do not play audio anywhere (`audiomode:i:2`). Sets `INFO_NOAUDIOPLAYBACK`.
+    Disabled,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// The initial desktop size to request
@@ -338,10 +352,16 @@ pub struct Config {
     pub autologon: bool,
     /// If true, local audio playback is enabled and `INFO_NOAUDIOPLAYBACK` is left clear
     /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
+    ///
+    /// Prefer [`audio_playback_mode`](Self::audio_playback_mode), which can also express playing on the server.
     pub enable_audio_playback: bool,
     /// If true, client microphone capture is enabled and `INFO_AUDIOCAPTURE` is set
     /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
     pub enable_audio_capture: bool,
+    /// Where audio playback goes. When set, this takes precedence over the legacy `enable_audio_playback`.
+    ///
+    /// `None` derives the mode from `enable_audio_playback`.
+    pub audio_playback_mode: Option<AudioPlaybackMode>,
     pub performance_flags: PerformanceFlags,
 
     pub license_cache: Option<Arc<dyn LicenseCache>>,
@@ -410,6 +430,18 @@ pub struct Config {
     ///
     /// [\[MS-RDPBCGR\] 2.2.7.1.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b3bc76ae-9ee5-454f-b197-ede845ca69cc
     pub rdp_version: gcc::RdpVersion,
+}
+
+impl Config {
+    /// The effective audio playback mode, falling back to `enable_audio_playback` when unset.
+    #[must_use]
+    pub fn audio_playback_mode(&self) -> AudioPlaybackMode {
+        self.audio_playback_mode.unwrap_or(if self.enable_audio_playback {
+            AudioPlaybackMode::Client
+        } else {
+            AudioPlaybackMode::Disabled
+        })
+    }
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);

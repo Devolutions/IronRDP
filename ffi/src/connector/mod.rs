@@ -479,7 +479,7 @@ pub mod ffi {
 mod tests {
     use super::ffi::ClientConnector;
     use crate::audio::ffi::NativeAudio;
-    use crate::connector::config::ffi::{ConfigBuilder, PerformanceFlags};
+    use crate::connector::config::ffi::{AudioPlaybackMode, ConfigBuilder, PerformanceFlags};
     use crate::dvc::direct_channel::ffi::{DirectDvcConfig, DirectDvcEventQueue};
     use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessageQueue;
     use crate::dvc::ffi::{DvcPipeProxyConfig, DvcPipeProxyDescriptor};
@@ -491,7 +491,7 @@ mod tests {
         builder.set_client_name("client");
         builder.set_client_dir("C:\\");
         builder.set_performance_flags(&PerformanceFlags::new_default());
-        builder.no_audio_playback = Some(true);
+        builder.audio_playback_mode = Some(AudioPlaybackMode::Disabled);
         let config = builder.build().map_err(|_| "connector config")?;
         let client_addr = "127.0.0.1:0".parse().map_err(|_| "test address")?;
 

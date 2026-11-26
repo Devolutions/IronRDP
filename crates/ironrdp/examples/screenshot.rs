@@ -290,6 +290,7 @@ fn build_config(
         autologon,
         enable_audio_playback: false,
         enable_audio_capture: false,
+        audio_playback_mode: None,
         compression_type,
         pointer_software_rendering: true,
         multitransport_flags: None,
