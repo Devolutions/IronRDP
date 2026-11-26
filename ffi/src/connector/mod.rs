@@ -13,6 +13,13 @@ pub(crate) struct RdpdrConfiguration {
 }
 
 impl RdpdrConfiguration {
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::unused_self,
+            reason = "the drive list is empty by construction outside Windows"
+        )
+    )]
     fn create_rdpdr(
         &self,
         computer_name: &str,
@@ -26,9 +33,7 @@ impl RdpdrConfiguration {
 
             let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(self.drives.clone())
                 .map_err(|error| {
-                    crate::error::GenericError(
-                        anyhow::Error::new(error).context("invalid RDPDR backend configuration"),
-                    )
+                    crate::error::GenericError(anyhow::Error::new(error).context("invalid RDPDR backend configuration"))
                 })?
                 .with_smartcard(smart_card_device_id.is_some());
             let initial_drives = factory.initial_drives();
