@@ -190,9 +190,9 @@ fn read_only_drives_allow_reads_and_reject_mutations() {
     );
 }
 
-// oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4707794276
+// oracle: regression Devolutions/IronRDP#2541
 #[test]
-fn read_only_drive_does_not_create_a_missing_root() {
+fn issue_2541_read_only_drive_does_not_create_a_missing_root() {
     let fixture = Fixture::new();
     let missing_root = fixture.root.join("missing-root");
 
