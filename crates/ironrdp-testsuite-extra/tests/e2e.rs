@@ -1677,7 +1677,10 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
 // oracle: spec MS-RDPBCGR §2.2.1.11.1.1
 #[tokio::test]
 async fn rdpsnd_starts_for_a_client_that_wants_audio() {
-    assert!(run_rdpsnd_probe(true).await, "the server never started rdpsnd");
+    assert!(
+        run_rdpsnd_probe(connector::AudioPlaybackMode::Client).await,
+        "the server never started rdpsnd"
+    );
 }
 
 /// A client that sets INFO_NOAUDIOPLAYBACK still joins the rdpsnd channel here, and the server leaves it unstarted,
@@ -1688,24 +1691,23 @@ async fn rdpsnd_starts_for_a_client_that_wants_audio() {
 #[tokio::test]
 async fn rdpsnd_is_not_started_for_a_client_that_asked_for_no_audio() {
     assert!(
-        !run_rdpsnd_probe(false).await,
+        !run_rdpsnd_probe(connector::AudioPlaybackMode::Disabled).await,
         "the server started rdpsnd for a client that asked for no audio"
     );
 }
 
-/// Connects a client that joins the rdpsnd channel, with `enable_audio_playback` as given, and returns whether the
+/// Connects a client that joins the rdpsnd channel, with `audio_playback_mode` as given, and returns whether the
 /// server started the channel, which is when it asks its sound handler for the formats to offer.
 ///
 /// The client's echo channel opening is the sign that the connection has settled: the server starts its static
 /// channels, rdpsnd among them, before any dynamic channel exists.
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-async fn run_rdpsnd_probe(enable_audio_playback: bool) -> bool {
+async fn run_rdpsnd_probe(audio_playback_mode: connector::AudioPlaybackMode) -> bool {
     let rdpsnd_started = Arc::new(AtomicBool::new(false));
     let echo_started = Arc::new(AtomicBool::new(false));
     let connector_echo = Arc::clone(&echo_started);
 
     let mut client_config = default_client_config();
-    client_config.enable_audio_playback = enable_audio_playback;
+    client_config.audio_playback_mode = Some(audio_playback_mode);
 
     client_server_with_connector(
         client_config,
@@ -5839,7 +5841,6 @@ impl server::ConnectionHandler for SessionConfigRecorder {
 }
 
 /// A real client sends settings before capability exchange, and the server reports them through setup callbacks.
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 async fn client_session_config_reported(desktop_limit: Option<DesktopSize>) -> Vec<SessionSetupEvent> {
     let seen = Arc::new(StdMutex::new(Vec::new()));
     let (mut server, _display_tx) = handler_server_with_desktop_limit(
@@ -5863,7 +5864,7 @@ async fn client_session_config_reported(desktop_limit: Option<DesktopSize>) -> V
                     width: 1280,
                     height: 720,
                 };
-                config.enable_audio_playback = false;
+                config.audio_playback_mode = Some(connector::AudioPlaybackMode::Disabled);
                 config.keyboard_layout = 0x0409;
                 config.keyboard_type = gcc::KeyboardType::JAPANESE;
                 config.keyboard_subtype = 0x1234_5678;

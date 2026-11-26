@@ -3357,6 +3357,15 @@ fn audio_mode_from_raw(value: i32) -> Result<AudioMode> {
     }
 }
 
+/// The MSTSC `AudioRedirectionMode` value for a connector audio playback mode.
+fn audio_redirection_mode_raw(mode: ironrdp_connector::AudioPlaybackMode) -> i32 {
+    match mode {
+        ironrdp_connector::AudioPlaybackMode::Client => 0,
+        ironrdp_connector::AudioPlaybackMode::Server => 1,
+        ironrdp_connector::AudioPlaybackMode::Disabled => 2,
+    }
+}
+
 fn should_prompt_for_credentials(server: &str, has_password: bool, prompt_for_credentials: bool) -> bool {
     prompt_for_credentials && !has_password && !server.trim().is_empty()
 }
@@ -11882,7 +11891,6 @@ impl Control {
         }
     }
 
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn rpc_connect(&self, properties: PropertySet, log_directive: Option<String>) -> ironrdp_agent::ipc::Response {
         if self.state.get() != ConnectionState::Disconnected {
             return ironrdp_agent::ipc::Response::typed_error(
@@ -12064,7 +12072,7 @@ impl Control {
                 .input_send_interval()
                 .map(|interval| i32::try_from(interval.as_millis()).unwrap_or(i32::MAX))
                 .unwrap_or(DEFAULT_MIN_INPUT_SEND_INTERVAL_MS);
-            compatibility.audio_redirection_mode = if connector.enable_audio_playback { 0 } else { 2 };
+            compatibility.audio_redirection_mode = audio_redirection_mode_raw(connector.audio_playback_mode());
             compatibility.audio_capture_redirection_mode = if connector.enable_audio_capture {
                 VARIANT_TRUE.0
             } else {
@@ -27738,5 +27746,17 @@ try {
         unsafe { shell.put_PublicMode(VARIANT_TRUE.0) }.expect("enable shell public mode");
         unsafe { shell.Launch() }.expect("launch in public mode");
         assert!(control.compatibility.borrow().public_mode);
+    }
+
+    // oracle: spec MSTSC IMsRdpClientAdvancedSettings::AudioRedirectionMode (0 redirects to the client, 1 plays on the remote computer, 2 disables audio)
+    #[rstest::rstest]
+    #[case::client(ironrdp_connector::AudioPlaybackMode::Client, 0)]
+    #[case::server(ironrdp_connector::AudioPlaybackMode::Server, 1)]
+    #[case::disabled(ironrdp_connector::AudioPlaybackMode::Disabled, 2)]
+    fn audio_redirection_mode_raw_matches_mstsc(
+        #[case] mode: ironrdp_connector::AudioPlaybackMode,
+        #[case] expected: i32,
+    ) {
+        assert_eq!(audio_redirection_mode_raw(mode), expected);
     }
 }

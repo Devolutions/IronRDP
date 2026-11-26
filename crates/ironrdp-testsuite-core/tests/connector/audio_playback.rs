@@ -5,7 +5,10 @@ use ironrdp_pdu::rdp::ClientInfoPdu;
 use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
 use ironrdp_pdu::x224::X224;
 
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
+#[expect(
+    deprecated,
+    reason = "these tests check how the legacy field interacts with the mode"
+)]
 fn client_info_flags(enable_audio_playback: bool, mode: Option<AudioPlaybackMode>) -> ClientInfoFlags {
     let mut config = super::test_config();
     config.enable_audio_playback = enable_audio_playback;

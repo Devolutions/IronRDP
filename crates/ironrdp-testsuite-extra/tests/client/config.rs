@@ -826,47 +826,55 @@ ironrdp_rdpdr:i:0
 }
 
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn audiomode_two_disables_audio_playback() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:2\n",
         &[],
     );
 
-    assert!(!config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Disabled
+    );
 }
 
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn audiomode_one_play_on_server_disables_local_playback() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:1\n",
         &[],
     );
 
-    assert!(!config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Server
+    );
 }
 
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn audiomode_zero_enables_client_redirection() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:0\n",
         &[],
     );
 
-    assert!(config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Client
+    );
 }
 
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn invalid_audiomode_falls_back_to_audio_playback_enabled() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:99\n",
         &[],
     );
 
-    assert!(config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Client
+    );
 }
 
 #[test]
@@ -1482,7 +1490,6 @@ fn monitor_layout_is_preserved_in_connector_configuration() {
 }
 
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_redirect_enables_playback_channel() {
     use ironrdp_cfg::AudioMode;
 
@@ -1491,7 +1498,10 @@ fn with_audio_mode_redirect_enables_playback_channel() {
         .build()
         .expect("valid configuration");
 
-    assert!(config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Client
+    );
     assert!(config.channels().sound);
     assert_eq!(
         config.properties().audio_mode().unwrap(),
@@ -1500,7 +1510,6 @@ fn with_audio_mode_redirect_enables_playback_channel() {
 }
 
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_play_on_server_disables_local_playback() {
     use ironrdp_cfg::AudioMode;
 
@@ -1509,13 +1518,15 @@ fn with_audio_mode_play_on_server_disables_local_playback() {
         .build()
         .expect("valid configuration");
 
-    assert!(!config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Server
+    );
     assert!(!config.channels().sound);
     assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::PlayOnServer));
 }
 
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_disabled_suppresses_sound_channel() {
     use ironrdp_cfg::AudioMode;
 
@@ -1524,7 +1535,10 @@ fn with_audio_mode_disabled_suppresses_sound_channel() {
         .build()
         .expect("valid configuration");
 
-    assert!(!config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Disabled
+    );
     assert!(!config.channels().sound);
     assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::Disabled));
 }
