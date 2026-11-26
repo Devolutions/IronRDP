@@ -155,3 +155,37 @@ browser-reported macOS 14+ uses `Microsoft Print to PDF`, and other clients use
 `printerDriverName(PrinterDriverName.PostScript)` or another explicit driver if
 your target host requires a different installed driver. Jobs larger than 128 MiB
 are rejected, and queued write chunks are bounded to protect browser memory.
+
+To announce several printers, such as every printer of the local computer, pass
+`printers([{ name, driverName?, deviceId?, isDefault?, network? }])` instead of
+`printerName`, `printerDeviceId` and `printerDriverName`. Printers without a
+`deviceId` get the lowest free ID from 2 up, and printers without a `driverName`
+use `printerDriverName` (or the platform default). At most one printer may be
+marked `isDefault`; when none is, the first one is the default. An empty list, a
+duplicate name or `deviceId`, or a property of the wrong type fails the
+connection; leave the extension out to announce the single printer above. `onJobStart(fileId, deviceId)` tells which printer a job
+was sent to, and the optional `onPrinterAnnounced(deviceId, accepted, resultCode)`
+reports the host's answer to each announcement. A host that lacks the named
+driver may still accept the announcement and only log that it could not create
+the queue.
+
+## Drive Redirection
+
+A page cannot open local files, so redirected drives are served by the page
+itself. Announce them with `drives([{ deviceId, name }])` (device IDs unique among
+drives and printers) and register `driveRequestCallback(request => ...)`. Each
+filesystem request of the host arrives there as a `DriveRequest`; answer every one
+with a nonzero `id` through `session.invokeExtension(driveReply({ id, status, ... }))`,
+in any order. `status` is an NTSTATUS (0 is success).
+
+The requests are `create` (path relative to the drive root, with the raw MS-SMB2
+access, disposition and options; reply with `fileId` and `information`), `close`,
+`read`, `write`, `stat`, `list` (a `\dir\pattern` query; reply with every matching
+entry at once, which WASM then enumerates), `volume` (`total` and `free` bytes),
+`setBasic`, `setSize`, `setDelete` and `rename`. `announced` reports the host's
+answer to each drive's announcement and `reset` means every handle is gone; neither
+takes a reply. Times are Unix milliseconds. Flushes, byte-range locks and device
+controls are answered in WASM; change notifications are never completed.
+
+The page decides what a drive exposes: it must confine paths to the shared folder
+itself (the host can send `..` or names of links).

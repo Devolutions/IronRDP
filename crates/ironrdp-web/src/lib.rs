@@ -20,6 +20,7 @@ mod camera;
 mod canvas;
 mod clipboard;
 mod cursor;
+mod drive;
 mod entra;
 mod error;
 mod image;
@@ -27,6 +28,7 @@ mod input;
 mod network_client;
 mod printer;
 mod rdp_file;
+mod rdpdr;
 mod session;
 
 mod wasm_bridge {
