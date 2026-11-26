@@ -7283,13 +7283,23 @@ test("every stage prompt states the character limit of each free-text schema fie
     if (schema?.items) proseLimits(schema.items, `${at}[]`, found);
     return found;
   };
+  const reviewerMatches = (condition, reviewer) => {
+    if (condition.const !== undefined) return condition.const === reviewer;
+    if (condition.enum !== undefined) return condition.enum.includes(reviewer);
+    if (condition.not !== undefined) return !reviewerMatches(condition.not, reviewer);
+    throw new Error("unsupported reviewer condition");
+  };
 
   for (const agent of ["classifier", ...REVIEWER_ORDER, "general-reviewer"]) {
     const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
     const repositoryRoot = path.join(__dirname, "..", "..");
     const prompt = fs.readFileSync(path.join(repositoryRoot, config.prompt_file), "utf8");
     const schema = JSON.parse(fs.readFileSync(path.join(repositoryRoot, config.schema_file), "utf8"));
-    const unusedReferences = /Set every `references` array to empty/.test(prompt);
+    // A reviewer whose schema rule forbids references never writes a reference heading.
+    const unusedReferences = (schema.allOf || []).some((rule) =>
+      rule.if?.properties?.reviewer !== undefined &&
+      reviewerMatches(rule.if.properties.reviewer, config.id) &&
+      rule.then?.properties?.findings?.items?.properties?.references?.maxItems === 0);
     const limits = proseLimits(schema)
       .filter(([field]) => !(unusedReferences && field.includes(".references[]")));
     assert.notEqual(limits.length, 0, agent);
