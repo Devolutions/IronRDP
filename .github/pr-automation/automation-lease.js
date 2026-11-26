@@ -123,13 +123,15 @@ async function claimAutomaticLease({
   let reason;
   try {
     // The review recheck reads lease ownership from the listing, so judging it before the listing
-    // shows the claim would supersede an unchanged pull request.
+    // shows the claim would supersede an unchanged pull request. Nothing else retries admission
+    // for an unchanged head, so a listing that never catches up fails the job instead.
     if (kind === "review" && prNumber !== undefined && !await awaitListedClaim({
       github, owner, repo, kind, headSha, checkRunId: claim.id,
       retries: listingRetries, delayMs: listingDelayMs, sleep,
     })) {
-      reason = "lease claim is not listed";
-    } else if (!await eligible(lease)) {
+      throw new Error(`lease claim ${claim.id} is not listed; rerun the failed jobs to retry admission`);
+    }
+    if (!await eligible(lease)) {
       // An eligibility change during `create` makes this claim unusable.
       reason = "pull request changed during lease claim";
     }

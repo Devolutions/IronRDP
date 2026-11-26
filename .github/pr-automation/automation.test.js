@@ -6595,12 +6595,11 @@ test("automatic review admission keeps a claim the check-run listing has not cau
   assert.equal(sleeps.length, 2);
 });
 
-test("automatic review admission neutralizes a claim the listing never shows", async () => {
-  const { decision, updates, sleeps } = await claimReviewWithListingLag({
+test("automatic review admission neutralizes and fails a claim the listing never shows", async () => {
+  const { error, updates, sleeps } = await claimReviewWithListingLag({
     hiddenListings: Infinity, listingRetries: 3,
   });
-  assert.equal(decision.owner, false);
-  assert.equal(decision.reason, "lease claim is not listed");
+  assert.match(error?.message ?? "", /lease claim 19 is not listed; rerun the failed jobs/);
   assert.equal(sleeps.length, 3);
   assert.deepEqual(updates.map(({ check_run_id, conclusion, output }) => ({
     check_run_id, conclusion, title: output.title,
