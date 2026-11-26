@@ -825,30 +825,34 @@ ironrdp_rdpdr:i:0
     }
 }
 
-// oracle: reference Microsoft RDP file settings (audiomode 0 plays sound on the local computer, 1 on the remote computer, 2 not at all)
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 0 plays sounds on the local device, 1 in the remote session, 2 not at all)
+// oracle: spec `ironrdp_connector::Config::enable_audio_playback` docs (true only for local playback)
 #[rstest::rstest]
-#[case::client("0", ironrdp_connector::AudioPlaybackMode::Client)]
-#[case::server("1", ironrdp_connector::AudioPlaybackMode::Server)]
-#[case::disabled("2", ironrdp_connector::AudioPlaybackMode::Disabled)]
+#[case::client("0", ironrdp_connector::AudioPlaybackMode::Client, true)]
+#[case::server("1", ironrdp_connector::AudioPlaybackMode::Server, false)]
+#[case::disabled("2", ironrdp_connector::AudioPlaybackMode::Disabled, false)]
 fn audiomode_selects_audio_playback_mode(
     #[case] audiomode: &str,
-    #[case] expected: ironrdp_connector::AudioPlaybackMode,
+    #[case] expected_mode: ironrdp_connector::AudioPlaybackMode,
+    #[case] expected_legacy_playback: bool,
 ) {
     let config = parse_config_from_rdp(
         &format!(
-            "full address:s:rdp.example.com
-username:s:test-user
-ClearTextPassword:s:test-pass
-audiomode:i:{audiomode}
-"
+            "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:{audiomode}\n"
         ),
         &[],
     );
 
-    assert_eq!(config.connector().audio_playback_mode(), expected);
+    assert_eq!(config.connector().audio_playback_mode(), expected_mode);
+    #[expect(
+        deprecated,
+        reason = "consumers that still read the legacy field rely on the builder mirroring the mode"
+    )]
+    let legacy_playback = config.connector().enable_audio_playback;
+    assert_eq!(legacy_playback, expected_legacy_playback);
 }
 
-// oracle: reference Microsoft RDP file settings (audiomode defaults to 0, playing sound on the local computer)
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: the default 0 plays sounds on the local device)
 #[test]
 fn invalid_audiomode_falls_back_to_audio_playback_enabled() {
     let config = parse_config_from_rdp(
@@ -1474,7 +1478,7 @@ fn monitor_layout_is_preserved_in_connector_configuration() {
     assert_eq!(config.connector().monitor_layout.as_ref(), Some(&monitor_layout));
 }
 
-// oracle: reference Microsoft RDP file settings (audiomode 0 plays sound on the local computer)
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 0 plays sounds on the local device)
 #[test]
 fn with_audio_mode_redirect_enables_playback_channel() {
     use ironrdp_cfg::AudioMode;
@@ -1495,7 +1499,7 @@ fn with_audio_mode_redirect_enables_playback_channel() {
     );
 }
 
-// oracle: reference Microsoft RDP file settings (audiomode 1 plays sound on the remote computer)
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 1 plays sounds in the remote session)
 #[test]
 fn with_audio_mode_play_on_server_disables_local_playback() {
     use ironrdp_cfg::AudioMode;
@@ -1513,7 +1517,7 @@ fn with_audio_mode_play_on_server_disables_local_playback() {
     assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::PlayOnServer));
 }
 
-// oracle: reference Microsoft RDP file settings (audiomode 2 plays no sound)
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 2 plays no sounds)
 #[test]
 fn with_audio_mode_disabled_suppresses_sound_channel() {
     use ironrdp_cfg::AudioMode;

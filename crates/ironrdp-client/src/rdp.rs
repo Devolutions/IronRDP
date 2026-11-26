@@ -2829,6 +2829,7 @@ fn build_connector(
     let audio_playback = audio_playback_mode == AudioPlaybackMode::Client;
 
     // Audio output: one backend for the static RDPSND channel and the AUDIO_PLAYBACK_DVC channels.
+    // INVARIANT: `playback` is `Some` exactly when `audio_playback` holds.
     #[cfg(feature = "sound")]
     let playback = audio_playback.then(|| crate::audio::SharedPlayback::new(&config.channels.audio));
     #[cfg(feature = "sound")]
@@ -2958,7 +2959,7 @@ fn build_connector(
 
     #[cfg(feature = "sound")]
     if matches!(rdpsnd_kind, Some(RdpsndBackendKind::Playback)) {
-        // `playback` exists whenever `audio_playback` holds, so the static channel and the dynamic channels drive the same backend.
+        // `playback` is `Some` exactly when `audio_playback` holds, so the static channel and the dynamic channels drive the same backend.
         let playback = playback.expect("the shared playback backend exists when audio playback is enabled");
         connector = connector.with_static_channel(
             ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))

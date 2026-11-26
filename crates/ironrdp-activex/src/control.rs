@@ -3357,17 +3357,6 @@ fn audio_mode_from_raw(value: i32) -> Result<AudioMode> {
     }
 }
 
-/// The MSTSC [`AudioRedirectionMode`] value for a connector audio playback mode.
-///
-/// [`AudioRedirectionMode`]: https://learn.microsoft.com/windows/win32/termserv/imsrdpclientadvancedsettings5-audioredirectionmode
-fn audio_redirection_mode_raw(mode: ironrdp_connector::AudioPlaybackMode) -> i32 {
-    match mode {
-        ironrdp_connector::AudioPlaybackMode::Client => 0,
-        ironrdp_connector::AudioPlaybackMode::Server => 1,
-        ironrdp_connector::AudioPlaybackMode::Disabled => 2,
-    }
-}
-
 /// Records the connection settings a connect request resolved, as the MSTSC properties report them.
 fn apply_rpc_config(
     compatibility: &mut CompatibilitySettings,
@@ -3413,7 +3402,12 @@ fn apply_rpc_config(
         .input_send_interval()
         .map(|interval| i32::try_from(interval.as_millis()).unwrap_or(i32::MAX))
         .unwrap_or(DEFAULT_MIN_INPUT_SEND_INTERVAL_MS);
-    compatibility.audio_redirection_mode = audio_redirection_mode_raw(connector.audio_playback_mode());
+    // MSTSC AudioRedirectionMode values: https://learn.microsoft.com/windows/win32/termserv/imsrdpclientadvancedsettings5-audioredirectionmode
+    compatibility.audio_redirection_mode = match connector.audio_playback_mode() {
+        ironrdp_connector::AudioPlaybackMode::Client => 0,
+        ironrdp_connector::AudioPlaybackMode::Server => 1,
+        ironrdp_connector::AudioPlaybackMode::Disabled => 2,
+    };
     compatibility.audio_capture_redirection_mode = if connector.enable_audio_capture {
         VARIANT_TRUE.0
     } else {
@@ -27757,7 +27751,7 @@ try {
     }
 
     // The .rdp audiomode and AudioRedirectionMode share their values, so a connect request reports the value it was given.
-    // oracle: spec IMsRdpClientAdvancedSettings5::AudioRedirectionMode (0 plays audio on the local computer, 1 on the remote computer, 2 not at all)
+    // oracle: spec IMsRdpClientAdvancedSettings5::AudioRedirectionMode (https://learn.microsoft.com/windows/win32/termserv/imsrdpclientadvancedsettings5-audioredirectionmode: 0 plays audio on the local computer, 1 on the remote computer, 2 not at all)
     #[rstest::rstest]
     #[case::client(0)]
     #[case::server(1)]
