@@ -12,6 +12,11 @@ pub(crate) struct RdpdrConfiguration {
     compatibility_rdpsnd: bool,
 }
 
+/// Whether `needed` more static channels fit under the protocol limit.
+pub(crate) fn has_static_channel_space(channels: &ironrdp::svc::StaticChannelSet, needed: usize) -> bool {
+    channels.len() + needed <= ironrdp::svc::MAX_STATIC_CHANNELS
+}
+
 fn attach_rdpdr_compatibility_rdpsnd(connector: &mut ironrdp::connector::ClientConnector, audio_playback_forced: bool) {
     let playback_dvc = connector
         .get_static_channel_processor::<ironrdp::dvc::DrdynvcClient>()
@@ -138,8 +143,9 @@ pub mod ffi {
                 },
             );
             if !client.2.drives.is_empty() {
-                // UNTESTED: A drive-only connector must retain each read-only flag through RDPDR I/O,
-                // or a read-only share can become writable; check remote writes when changing this path.
+                // UNTESTED: The drive-only shape, without smartcard or audio attachment, is not exercised through RDPDR I/O.
+                // `configured_drives_survive_smartcard_then_audio` and `configured_drives_survive_audio_then_smartcard`
+                // check read-only enforcement through the same `create_rdpdr` path; extend them if this path diverges.
                 let rdpdr = client.create_rdpdr(&config.connector.client_name, None)?;
                 let connector = client
                     .0
@@ -185,7 +191,7 @@ pub mod ffi {
             {
                 return Err("RDPSND channel name is already registered".into());
             }
-            if connector.static_channels.len() == ironrdp::svc::MAX_STATIC_CHANNELS {
+            if !super::has_static_channel_space(&connector.static_channels, 1) {
                 return Err("no space for RDPSND channel".into());
             }
             connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend {})));
@@ -274,7 +280,7 @@ pub mod ffi {
                 .get_by_channel_name_key(&ironrdp::rdpsnd::client::Rdpsnd::NAME)
                 .is_some();
             let needed = usize::from(!existing_rdpdr) + usize::from(!existing_rdpsnd);
-            if ironrdp::svc::MAX_STATIC_CHANNELS < connector.static_channels.len() + needed {
+            if !super::has_static_channel_space(&connector.static_channels, needed) {
                 return Err("no space for RDPDR and RDPSND channels".into());
             }
 
@@ -1082,7 +1088,7 @@ mod tests {
         use ironrdp::svc::SvcProcessor as _;
         use ironrdp_core::{decode, encode_vec};
 
-        // oracle: spec MS-RDPEFS §1.3.1.1
+        // oracle: spec MS-RDPEFS §3.2.5.1.7, §3.2.5.1.8
         let server_capabilities = RdpdrPdu::CoreCapability(CoreCapability {
             capabilities: vec![
                 CapabilityMessage::new_general(1),
@@ -1103,7 +1109,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: spec MS-RDPEFS §1.3.1.1
+    // oracle: spec MS-RDPEFS §3.2.5.1.7, §3.2.5.1.8
     #[test]
     fn drive_and_smartcard_capabilities_are_exchanged() -> Result<(), Box<dyn core::error::Error>> {
         use ironrdp::rdpdr::pdu::RdpdrPdu;

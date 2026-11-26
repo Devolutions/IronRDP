@@ -15,6 +15,10 @@ pub(crate) struct RedirectedDriveConfig {
 }
 
 #[cfg(any(windows, test))]
+/// Returns the drive name as announced in DeviceData, uppercased for duplicate detection.
+///
+/// The uppercase fold is a deliberately conservative client-side policy:
+/// Windows resolves `\\tsclient\<name>` case-insensitively, and folding can only reject more names, never accept a colliding one.
 fn drive_wire_name(name: &str) -> String {
     // The device ID is only used to retrieve the single entry in this temporary collection.
     let mut devices = ironrdp::rdpdr::pdu::efs::Devices::new();

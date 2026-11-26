@@ -173,7 +173,7 @@ mod native {
             let needed = usize::from(self.playback && !compatibility_rdpsnd)
                 + usize::from(!drdynvc_type)
                 + usize::from(self.playback && !rdpdr_type);
-            if ironrdp::svc::MAX_STATIC_CHANNELS < channels.len() + needed {
+            if !crate::connector::has_static_channel_space(channels, needed) {
                 return Err("no space for native audio channels");
             }
             let (playback_dvc, capture_dvc) =

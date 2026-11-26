@@ -40,22 +40,23 @@ internal static class SmokeTests
             });
 
             // oracle: mutant accept an invalid root or name
-            foreach (var (caseName, displayName, root) in new[]
+            const string invalidRoot = "redirected drive root must be an absolute path on a logical volume";
+            foreach (var (caseName, displayName, root, message) in new[]
             {
-                ("relative root", "Invalid", @"relative\folder"),
-                ("parent root", "Invalid", @"C:\folder\..\other"),
-                ("UNC root", "Invalid", @"\\server\share"),
-                ("device root", "Invalid", @"\\.\C:\folder"),
-                ("verbatim root", "Invalid", @"\\?\C:\folder"),
-                ("embedded NUL root", "Invalid", "C:\\folder\0bad"),
-                ("empty name", "", WindowsDriveRoot()),
-                ("embedded NUL name", "bad\0name", WindowsDriveRoot()),
+                ("relative root", "Invalid", @"relative\folder", invalidRoot),
+                ("parent root", "Invalid", @"C:\folder\..\other", invalidRoot),
+                ("UNC root", "Invalid", @"\\server\share", invalidRoot),
+                ("device root", "Invalid", @"\\.\C:\folder", invalidRoot),
+                ("verbatim root", "Invalid", @"\\?\C:\folder", invalidRoot),
+                ("embedded NUL root", "Invalid", "C:\\folder\0bad", invalidRoot),
+                ("empty name", "", WindowsDriveRoot(), "redirected drive display name must not be empty"),
+                ("embedded NUL name", "bad\0name", WindowsDriveRoot(), "redirected drive display name must not contain NUL"),
             })
             {
                 yield return ($"Windows drive config rejects {caseName} without changing the builder", () =>
                 {
                     var builder = TlsConfigBuilder();
-                    Throws<IronRdpException>(() => builder.AddRedirectedDrive(displayName, root, false));
+                    ThrowsWithMessage<IronRdpException>(() => builder.AddRedirectedDrive(displayName, root, false), message);
                     AddWindowsDrives(builder);
                     var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
                     connector.WithStaticChannelRdpdr("smoke-tests", 3);
@@ -1040,6 +1041,7 @@ internal static class SmokeTests
             first.WithNativeAudio(audio);
             Throws<IronRdpException>(() => second.WithNativeAudio(audio));
             Throws<IronRdpException>(() => first.WithStaticChannelRdpSnd());
+            // oracle: mutant attach native playback without RDPDR
             AssertConnectorChannels(first, "rdpdr", "rdpsnd", "drdynvc");
         });
 
