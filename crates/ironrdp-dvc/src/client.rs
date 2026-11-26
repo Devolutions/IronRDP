@@ -156,6 +156,9 @@ pub struct DrdynvcClient {
     cap_handshake_done: bool,
     available_tunnels: BTreeSet<SoftSyncTunnelType>,
     tunnel_channels: BTreeMap<DynamicChannelId, SoftSyncTunnelType>,
+    /// Channels in `tunnel_channels` bound by their first tunneled data rather than by the server's
+    /// choice; TCP stays a valid route for their data.
+    unselected_tunnel_channels: BTreeSet<DynamicChannelId>,
     switched_tunnels: BTreeSet<SoftSyncTunnelType>,
     soft_sync_complete: bool,
     /// Recent channels the client closed or declined, and their tunnels, ordered from oldest to newest.
@@ -187,6 +190,7 @@ impl DrdynvcClient {
             cap_handshake_done: false,
             available_tunnels: BTreeSet::new(),
             tunnel_channels: BTreeMap::new(),
+            unselected_tunnel_channels: BTreeSet::new(),
             switched_tunnels: BTreeSet::new(),
             soft_sync_complete: false,
             client_closed: VecDeque::new(),
@@ -454,6 +458,7 @@ impl DrdynvcClient {
 
     fn remove_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
         self.tunnel_channels.remove(&channel_id);
+        self.unselected_tunnel_channels.remove(&channel_id);
         if !self.dynamic_channels.remove_by_channel_id(channel_id) {
             return None;
         }
@@ -504,6 +509,9 @@ impl DrdynvcClient {
     ///
     /// The channel's Soft-Sync-selected route is validated before the dynamic channel sees the
     /// data, so data arriving on the wrong tunnel is rejected (MS-RDPEDYC 3.1.5.4.3, 3.2.5.3.2).
+    /// Data for a channel that is not open is rejected too. Data for an open channel that the
+    /// server routed to no tunnel is taken, and the channel is bound to the tunnel it arrived on;
+    /// the server may still send that channel's data over TCP.
     /// The returned batch carries the channel ID so response messages can be routed back onto
     /// the same tunnel.
     ///
@@ -529,14 +537,35 @@ impl DrdynvcClient {
                     );
                     return Ok(DvcMessageBatch::new(channel_id, Vec::new()));
                 }
-                let selected_tunnel =
-                    self.tunnel_channels.get(&channel_id).copied().ok_or_else(|| {
-                        pdu_other_err!("received tunneled data for a channel not selected by Soft-Sync")
-                    })?;
-                if tunnel_type != selected_tunnel {
-                    return Err(pdu_other_err!(
-                        "received tunneled data on a tunnel not selected for the dynamic channel"
-                    ));
+                match self.tunnel_channels.get(&channel_id).copied() {
+                    Some(selected) if selected == tunnel_type => {}
+                    // A route the server chose, in a Soft-Sync request or by creating the channel
+                    // on a tunnel, is one it committed to (MS-RDPEDYC 3.1.5.4.3), so data on
+                    // another tunnel stays an error.
+                    Some(_) => {
+                        return Err(pdu_other_err!(
+                            "received tunneled data on a tunnel not selected for the dynamic channel"
+                        ));
+                    }
+                    None if self.dynamic_channels.get_by_channel_id(channel_id).is_none() => {
+                        return Err(pdu_other_err!(
+                            "received tunneled data for a channel not selected by Soft-Sync"
+                        ));
+                    }
+                    // Windows creates AUDIO_PLAYBACK_LOSSY_DVC over TCP after Soft-Sync, never
+                    // lists it, and sends its data on the reliable UDP tunnel (the first sound,
+                    // e.g. a UAC prompt's). The server chose no route for such a channel, so the
+                    // data is taken and the channel's replies follow it onto this tunnel; TCP
+                    // stays a valid route for its data as well.
+                    None => {
+                        debug!(
+                            channel_id,
+                            ?tunnel_type,
+                            "Tunneled DVC data for an open channel Soft-Sync did not select; taking it"
+                        );
+                        self.tunnel_channels.insert(channel_id, tunnel_type);
+                        self.unselected_tunnel_channels.insert(channel_id);
+                    }
                 }
                 let messages = self.process_data(data)?;
                 Ok(DvcMessageBatch::new(channel_id, messages))
@@ -771,7 +800,9 @@ impl SvcProcessor for DrdynvcClient {
                     );
                     return Ok(responses);
                 }
-                if self.tunnel_channels.contains_key(&data.channel_id()) {
+                if self.tunnel_channels.contains_key(&data.channel_id())
+                    && !self.unselected_tunnel_channels.contains(&data.channel_id())
+                {
                     return Err(pdu_other_err!("received TCP data for a channel selected by Soft-Sync"));
                 }
                 responses.extend(self.process_data(data)?);
