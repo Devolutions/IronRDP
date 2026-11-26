@@ -36,7 +36,7 @@ use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::rdp::ClientInfoPdu;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
-use ironrdp_pdu::rdp::client_info::{ClientInfoFlags, CompressionType, Credentials};
+use ironrdp_pdu::rdp::client_info::{ClientInfo, ClientInfoFlags, CompressionType, Credentials};
 use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
@@ -1254,19 +1254,23 @@ fn reactivation_backlog_rejects_frames_beyond_sixteen_mib() {
     assert!(error.to_string().contains("backlog"));
 }
 
-/// The encoded Client Info PDU of [`CLIENT_INFO_UNICODE`] with `flags` added, and the flags it then carries.
-fn client_info_with_flags(flags: ClientInfoFlags) -> (Vec<u8>, ClientInfoFlags) {
-    let mut client_info = CLIENT_INFO_UNICODE.clone();
-    client_info.flags |= flags;
-    let sent = client_info.flags;
-    let pdu = encode_vec(&ClientInfoPdu {
+/// The encoded Client Info PDU that carries `client_info`.
+fn client_info_pdu(client_info: ClientInfo) -> Vec<u8> {
+    encode_vec(&ClientInfoPdu {
         security_header: BasicSecurityHeader {
             flags: BasicSecurityHeaderFlags::INFO_PKT,
         },
         client_info,
     })
-    .unwrap();
-    (pdu, sent)
+    .unwrap()
+}
+
+/// The encoded Client Info PDU of [`CLIENT_INFO_UNICODE`] with `flags` added, and the flags it then carries.
+fn client_info_with_flags(flags: ClientInfoFlags) -> (Vec<u8>, ClientInfoFlags) {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.flags |= flags;
+    let sent = client_info.flags;
+    (client_info_pdu(client_info), sent)
 }
 
 /// The flags of the client's Info Packet, MS-RDPBCGR [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET), reach
@@ -1327,6 +1331,35 @@ fn timezone_info_is_kept_and_survives_reactivation() {
 
     assert!(result.reactivation);
     assert_eq!(result.timezone_info, Some(expected));
+}
+
+/// The `AlternateShell` and `WorkingDir` of the client's Info Packet, MS-RDPBCGR [2.2.1.11.1.1], reach the
+/// `AcceptorResult` as sent, and survive a reactivation like the flags, since the client does not send its Client Info
+/// PDU again, MS-RDPBCGR [1.3.1.3].
+///
+/// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+/// [1.3.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1 and §1.3.1.3
+#[test]
+fn alternate_shell_and_work_dir_are_kept_as_sent() {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.alternate_shell = "curtain".to_owned();
+    client_info.work_dir = "C:\\work".to_owned();
+    let client_info = client_info_pdu(client_info);
+
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    let (acceptor, result, user_channel_id, io_channel_id) = accepted(client_blocks, &client_info);
+    assert_eq!(result.alternate_shell, "curtain");
+    assert_eq!(result.work_dir, "C:\\work");
+
+    let mut acceptor = Acceptor::new_deactivation_reactivation(acceptor, result.static_channels, DESKTOP_SIZE)
+        .expect("rebuild the acceptor for reactivation");
+    let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
+
+    assert!(result.reactivation);
+    assert_eq!(result.alternate_shell, "curtain");
+    assert_eq!(result.work_dir, "C:\\work");
 }
 
 /// The client's GCC blocks with `desktop` and `device` as the `desktopScaleFactor` and `deviceScaleFactor` of its
