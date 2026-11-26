@@ -1,7 +1,8 @@
 //! Windows Sandbox integration for ironrdp-agent.
 //!
 //! Resolves RDP connection parameters via the private WindowsSandboxServer gRPC
-//! (`sandboxserver.SandboxCore` on `\\.\pipe\wsandbox\<md5(user SID)>`), then
+//! (`sandboxserver.SandboxCore` on `\\.\pipe\wsandbox\<md5(TokenUser)>-<md5(TokenOwner)>`
+//! or the legacy `\\.\pipe\wsandbox\<md5(TokenUser)>`), then
 //! expands them into a [`PropertySet`] the daemon already understands.
 //!
 //! Prefer creating the sandbox with official `wsb start`, then:
