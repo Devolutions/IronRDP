@@ -14,6 +14,10 @@ mod license_exchange;
 mod remote_guard;
 mod server_core_data;
 
+#[expect(
+    deprecated,
+    reason = "a `Config` literal must name every field, including the deprecated one"
+)]
 fn test_config() -> ironrdp_connector::Config {
     ironrdp_connector::Config {
         desktop_size: DesktopSize {

@@ -29,6 +29,10 @@ const IO_CHANNEL_ID: u16 = 1003;
 const MESSAGE_CHANNEL_ID: u16 = 1004;
 const SHARE_ID: u32 = 0x0001_0000;
 
+#[expect(
+    deprecated,
+    reason = "a `Config` literal must name every field, including the deprecated one"
+)]
 fn test_config() -> ironrdp_connector::Config {
     ironrdp_connector::Config {
         desktop_size: DesktopSize {

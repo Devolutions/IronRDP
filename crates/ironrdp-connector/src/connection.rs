@@ -2468,62 +2468,19 @@ mod tests {
     use ironrdp_pdu::{gcc, nego};
 
     use super::{create_client_info_pdu, create_gcc_blocks};
-    use crate::{Config, Credentials, DesktopSize};
+    use crate::{AudioPlaybackMode, Config, Credentials, DesktopSize};
 
     #[test]
     fn remote_application_client_info_uses_rail_launch_data() {
-        let config = Config {
-            desktop_size: DesktopSize {
-                width: 1024,
-                height: 768,
-            },
-            monitor_layout: None,
-            desktop_scale_factor: 0,
-            desktop_physical_size: None,
-            desktop_orientation: None,
-            device_scale_factor: None,
-            monitor_extended_layout: None,
-            relative_mouse_input: false,
-            enable_tls: true,
-            enable_credssp: false,
-            enable_standard_rdp_security: false,
-            credentials: Credentials::UsernamePassword {
-                username: "test".into(),
-                password: "test".into(),
-            },
-            domain: None,
-            client_build: 0,
-            client_name: "test".into(),
-            keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
-            keyboard_subtype: 0,
-            keyboard_functional_keys_count: 12,
-            keyboard_layout: 0,
-            connection_type: gcc::ConnectionType::Lan,
-            ime_file_name: String::new(),
-            bitmap: None,
-            dig_product_id: String::new(),
-            client_dir: String::new(),
-            alternate_shell: "app.exe".into(),
-            work_dir: "C:\\apps".into(),
-            remote_application_mode: true,
-            rail_support_level: RailSupportLevel::SUPPORTED,
-            platform: MajorPlatformType::UNIX,
-            hardware_id: None,
-            request_data: None,
-            autologon: false,
-            enable_audio_playback: false,
-            enable_audio_capture: false,
-            audio_playback_mode: None,
-            performance_flags: Default::default(),
-            license_cache: None,
-            timezone_info: Default::default(),
-            compression_type: None,
-            enable_server_pointer: false,
-            pointer_software_rendering: false,
-            multitransport_flags: None,
-            support_dyn_vc_gfx_protocol: false,
-            rdp_version: gcc::RdpVersion::V5_PLUS,
+        let mut config = test_config();
+        config.desktop_size = DesktopSize {
+            width: 1024,
+            height: 768,
         };
+        config.alternate_shell = "app.exe".into();
+        config.work_dir = "C:\\apps".into();
+        config.remote_application_mode = true;
+        config.rail_support_level = RailSupportLevel::SUPPORTED;
 
         let client_info =
             create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
@@ -2536,58 +2493,13 @@ mod tests {
 
     #[test]
     fn audio_capture_flag_is_set_when_enabled() {
-        let mut config = Config {
-            desktop_size: DesktopSize {
-                width: 1024,
-                height: 768,
-            },
-            monitor_layout: None,
-            desktop_scale_factor: 0,
-            desktop_physical_size: None,
-            desktop_orientation: None,
-            device_scale_factor: None,
-            monitor_extended_layout: None,
-            relative_mouse_input: false,
-            enable_tls: true,
-            enable_credssp: false,
-            enable_standard_rdp_security: false,
-            credentials: Credentials::UsernamePassword {
-                username: "test".into(),
-                password: "test".into(),
-            },
-            domain: None,
-            client_build: 0,
-            client_name: "test".into(),
-            keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
-            keyboard_subtype: 0,
-            keyboard_functional_keys_count: 12,
-            keyboard_layout: 0,
-            connection_type: gcc::ConnectionType::Lan,
-            ime_file_name: String::new(),
-            bitmap: None,
-            dig_product_id: String::new(),
-            client_dir: String::new(),
-            alternate_shell: String::new(),
-            work_dir: String::new(),
-            remote_application_mode: false,
-            rail_support_level: RailSupportLevel::empty(),
-            platform: MajorPlatformType::UNIX,
-            hardware_id: None,
-            request_data: None,
-            autologon: false,
-            enable_audio_playback: true,
-            enable_audio_capture: true,
-            audio_playback_mode: None,
-            performance_flags: Default::default(),
-            license_cache: None,
-            timezone_info: Default::default(),
-            compression_type: None,
-            enable_server_pointer: false,
-            pointer_software_rendering: false,
-            multitransport_flags: None,
-            support_dyn_vc_gfx_protocol: false,
-            rdp_version: gcc::RdpVersion::V5_PLUS,
+        let mut config = test_config();
+        config.desktop_size = DesktopSize {
+            width: 1024,
+            height: 768,
         };
+        config.audio_playback_mode = Some(AudioPlaybackMode::Client);
+        config.enable_audio_capture = true;
 
         let client_info =
             create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
@@ -2601,6 +2513,10 @@ mod tests {
     }
 
     /// A plain client [`Config`] for tests to change what they look at.
+    #[expect(
+        deprecated,
+        reason = "a `Config` literal must name every field, including the deprecated one"
+    )]
     fn test_config() -> Config {
         Config {
             desktop_size: DesktopSize {
@@ -2702,66 +2618,16 @@ mod tests {
 
     #[test]
     fn gcc_blocks_advertise_monitor_layout_when_supported() {
-        let mut config = Config {
-            desktop_size: DesktopSize {
-                width: 1_920,
-                height: 1_080,
-            },
-            monitor_layout: Some(gcc::ClientMonitorData {
-                monitors: vec![gcc::Monitor {
-                    left: 0,
-                    top: 0,
-                    right: 1_919,
-                    bottom: 1_079,
-                    flags: gcc::MonitorFlags::PRIMARY,
-                }],
-            }),
-            desktop_scale_factor: 0,
-            desktop_physical_size: None,
-            desktop_orientation: None,
-            device_scale_factor: None,
-            monitor_extended_layout: None,
-            relative_mouse_input: false,
-            enable_tls: true,
-            enable_credssp: false,
-            enable_standard_rdp_security: false,
-            credentials: Credentials::UsernamePassword {
-                username: "test".into(),
-                password: "test".into(),
-            },
-            domain: None,
-            client_build: 0,
-            client_name: "test".into(),
-            keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
-            keyboard_subtype: 0,
-            keyboard_functional_keys_count: 12,
-            keyboard_layout: 0,
-            connection_type: gcc::ConnectionType::Lan,
-            ime_file_name: String::new(),
-            bitmap: None,
-            dig_product_id: String::new(),
-            client_dir: String::new(),
-            alternate_shell: String::new(),
-            work_dir: String::new(),
-            remote_application_mode: false,
-            rail_support_level: RailSupportLevel::empty(),
-            platform: MajorPlatformType::UNIX,
-            hardware_id: None,
-            request_data: None,
-            autologon: false,
-            enable_audio_playback: false,
-            enable_audio_capture: false,
-            audio_playback_mode: None,
-            performance_flags: Default::default(),
-            license_cache: None,
-            timezone_info: Default::default(),
-            compression_type: None,
-            enable_server_pointer: false,
-            pointer_software_rendering: false,
-            multitransport_flags: None,
-            support_dyn_vc_gfx_protocol: false,
-            rdp_version: gcc::RdpVersion::V5_PLUS,
-        };
+        let mut config = test_config();
+        config.monitor_layout = Some(gcc::ClientMonitorData {
+            monitors: vec![gcc::Monitor {
+                left: 0,
+                top: 0,
+                right: 1_919,
+                bottom: 1_079,
+                flags: gcc::MonitorFlags::PRIMARY,
+            }],
+        });
 
         let blocks = create_gcc_blocks(
             &config,

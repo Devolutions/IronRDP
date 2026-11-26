@@ -1698,6 +1698,7 @@ async fn rdpsnd_is_not_started_for_a_client_that_asked_for_no_audio() {
 ///
 /// The client's echo channel opening is the sign that the connection has settled: the server starts its static
 /// channels, rdpsnd among them, before any dynamic channel exists.
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 async fn run_rdpsnd_probe(enable_audio_playback: bool) -> bool {
     let rdpsnd_started = Arc::new(AtomicBool::new(false));
     let echo_started = Arc::new(AtomicBool::new(false));
@@ -4573,6 +4574,10 @@ async fn a_vouch_for_a_replaced_connection_does_not_reach_its_replacement() {
     );
 }
 
+#[expect(
+    deprecated,
+    reason = "a `Config` literal must name every field, including the deprecated one"
+)]
 pub(super) fn default_client_config() -> connector::Config {
     connector::Config {
         desktop_size: DesktopSize {
@@ -5834,6 +5839,7 @@ impl server::ConnectionHandler for SessionConfigRecorder {
 }
 
 /// A real client sends settings before capability exchange, and the server reports them through setup callbacks.
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 async fn client_session_config_reported(desktop_limit: Option<DesktopSize>) -> Vec<SessionSetupEvent> {
     let seen = Arc::new(StdMutex::new(Vec::new()));
     let (mut server, _display_tx) = handler_server_with_desktop_limit(

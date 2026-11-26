@@ -958,6 +958,10 @@ mod tests {
         )));
     }
 
+    #[expect(
+        deprecated,
+        reason = "a `Config` literal must name every field, including the deprecated one"
+    )]
     fn test_config(bitmap: Option<BitmapConfig>) -> Config {
         Config {
             desktop_size: DesktopSize {

@@ -482,6 +482,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     async fn connect(&self) -> Result<Self::Session, Self::Error> {
         let (
             username,
@@ -1860,6 +1861,10 @@ fn parse_file_metadata_array(files: JsValue) -> Result<Vec<FileMetadata>, IronEr
     Ok(file_list)
 }
 
+#[expect(
+    deprecated,
+    reason = "a `Config` literal must name every field, including the deprecated one"
+)]
 fn build_config(
     username: String,
     password: String,

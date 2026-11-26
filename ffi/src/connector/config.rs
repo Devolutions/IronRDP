@@ -254,6 +254,10 @@ pub mod ffi {
             self.direct_dvc = Some(direct_dvc.clone());
         }
 
+        #[expect(
+            deprecated,
+            reason = "a `Config` literal must name every field, including the deprecated one"
+        )]
         pub fn build(&self) -> Result<Box<Config>, Box<IronRdpError>> {
             let connector = ironrdp::connector::Config {
                 credentials: self.credentials.clone().ok_or("credentials not set")?,

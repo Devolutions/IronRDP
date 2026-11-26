@@ -140,6 +140,7 @@ mod native {
             Ok(message)
         }
 
+        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         pub(crate) fn attach(
             self: &Arc<Self>,
             connector: &mut ironrdp::connector::ClientConnector,
@@ -1011,6 +1012,7 @@ mod native {
 
         // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602557
         #[test]
+        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         fn capture_only_disables_playback_advertisement() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
             let mut connector = connector();
