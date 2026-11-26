@@ -9,6 +9,7 @@ pub(crate) struct RdpdrConfiguration {
     smartcard: bool,
     /// The playback mode the application chose, kept apart from the connector configuration
     /// so the request can be decided again if the first connection step fails.
+    /// See the [playback request intent](https://github.com/Devolutions/IronRDP/blob/master/ffi/src/connector/INTENT.md#playback-request).
     playback_choice: Option<ironrdp::connector::AudioPlaybackMode>,
     /// INVARIANT: This is true only while the automatically installed silent RDPSND channel is present.
     compatibility_rdpsnd: bool,
@@ -25,17 +26,28 @@ fn attach_rdpdr_compatibility_rdpsnd(connector: &mut ironrdp::connector::ClientC
     )));
 }
 
-/// Decides the audio playback request from the channels attached when the connection starts.
+/// Whether the connector has not sent its first connection PDU yet.
 ///
-/// Runs only before the first connection PDU, after which channels can no longer be attached,
-/// so the request does not depend on the order in which channels were attached.
+/// Audio, RDPDR and dynamic channels are attached only while this holds,
+/// because the playback request is decided from them when the connection starts.
+fn connection_not_started(connector: &ironrdp::connector::ClientConnector) -> bool {
+    matches!(
+        connector.state,
+        ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
+    )
+}
+
+/// Decides the audio playback request from the channels attached when the connection starts,
+/// following the [playback request intent].
+///
+/// Runs only before the first connection PDU, after which audio, RDPDR and dynamic channels are refused,
+/// so the request does not depend on the order in which those channels were attached.
+///
+/// [playback request intent]: https://github.com/Devolutions/IronRDP/blob/master/ffi/src/connector/INTENT.md#playback-request
 fn decide_audio_playback(connector: &mut ironrdp::connector::ClientConnector, rdpdr: &RdpdrConfiguration) {
     use ironrdp::connector::AudioPlaybackMode;
 
-    if !matches!(
-        connector.state,
-        ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-    ) {
+    if !connection_not_started(connector) {
         return;
     }
 
@@ -208,10 +220,7 @@ pub mod ffi {
                 .0
                 .as_mut()
                 .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
-            if !matches!(
-                connector.state,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-            ) {
+            if !super::connection_not_started(connector) {
                 return Err("RDPSND must be attached before connecting".into());
             }
             if self.2.compatibility_rdpsnd {
@@ -248,10 +257,7 @@ pub mod ffi {
             if self.1.is_some() {
                 return Err("native audio is already attached to this connector".into());
             }
-            if !matches!(
-                connector.state,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-            ) {
+            if !super::connection_not_started(connector) {
                 return Err("native audio must be attached before connecting".into());
             }
             audio.0.attach(connector, self.2.compatibility_rdpsnd)?;
@@ -286,10 +292,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            if !matches!(
-                connector.state,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-            ) {
+            if !super::connection_not_started(connector) {
                 return Err("RDPDR must be attached before connecting".into());
             }
             if self.2.smartcard {
@@ -346,10 +349,7 @@ pub mod ffi {
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            if !matches!(
-                connector.state,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-            ) {
+            if !super::connection_not_started(connector) {
                 return Err("dynamic channels must be attached before connecting".into());
             }
 
@@ -374,6 +374,7 @@ pub mod ffi {
             Ok(())
         }
 
+        /// Call before connecting.
         pub fn with_dynamic_channel_display_control(&mut self) -> Result<(), Box<IronRdpError>> {
             self.with_dvc(DisplayControlClient::new(|c| {
                 info!(display_control_capabilities = ?c, "DisplayControl capabilities received");
@@ -388,6 +389,7 @@ pub mod ffi {
         /// `show_touch_visuals` asks the server to draw its touch visuals.
         /// Protocol version 2 is advertised, which covers touch and pen frames; multipen injection is
         /// not requested, so pen frames use `deviceId` 0.
+        /// Call before connecting.
         ///
         /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
         pub fn with_dynamic_channel_rdpei(
@@ -407,6 +409,7 @@ pub mod ffi {
             ))
         }
 
+        /// Call before connecting.
         pub fn with_dynamic_channel_pipe_proxy(
             &mut self,
             config: &DvcPipeProxyConfig,
@@ -460,10 +463,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            if !matches!(
-                connector.state,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-            ) {
+            if !super::connection_not_started(connector) {
                 return Err("dynamic channels must be attached before connecting".into());
             }
 
@@ -714,18 +714,16 @@ mod tests {
         ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")
     }
 
+    fn decided_playback(connector: &ClientConnector) -> Result<Option<PlaybackRequest>, &'static str> {
+        Ok(connector.0.as_ref().ok_or("connector")?.config.audio_playback_mode)
+    }
+
     /// Runs the first connection step, where the connector decides its playback request, and returns that request.
     fn requested_playback(connector: &mut ClientConnector) -> Result<PlaybackRequest, &'static str> {
         connector
             .step_no_input(&mut WriteBuf::new())
             .map_err(|_| "first connection step")?;
-        connector
-            .0
-            .as_ref()
-            .ok_or("connector")?
-            .config
-            .audio_playback_mode
-            .ok_or("playback request")
+        decided_playback(connector)?.ok_or("playback request")
     }
 
     fn connector_with_playback_setting(
@@ -804,10 +802,6 @@ mod tests {
         Ok(connector)
     }
 
-    fn decided_playback(connector: &ClientConnector) -> Result<Option<PlaybackRequest>, &'static str> {
-        Ok(connector.0.as_ref().ok_or("connector")?.config.audio_playback_mode)
-    }
-
     // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn first_step_with_input_decides_playback() -> Result<(), &'static str> {
@@ -830,6 +824,25 @@ mod tests {
             )
             .map_err(|_| "connection request")?;
         assert_eq!(decided_playback(&connector)?, Some(PlaybackRequest::Client));
+        Ok(())
+    }
+
+    // oracle: mutant decide a retried first step from the earlier decision instead of the application's choice
+    #[test]
+    fn retried_first_step_decides_from_the_application_choice() -> Result<(), &'static str> {
+        let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Client))?;
+        connector
+            .with_static_channel_rdpdr("client", 42)
+            .map_err(|_| "smartcard")?;
+        // Stands in for a first step that decided the request and then failed before sending.
+        let ClientConnector(Some(inner), _, rdpdr) = &mut *connector else {
+            return Err("connector");
+        };
+        super::decide_audio_playback(inner, rdpdr);
+        assert_eq!(decided_playback(&connector)?, Some(PlaybackRequest::Disabled));
+
+        connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
@@ -905,7 +918,7 @@ mod tests {
         assert_rdpsnd_playback(connector)
     }
 
-    // oracle: mutant drop static playback when smartcard RDPDR is attached afterward
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
     #[test]
     fn static_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -918,7 +931,7 @@ mod tests {
         assert_rdpsnd_playback(&mut connector)
     }
 
-    // oracle: mutant drop static playback when smartcard RDPDR is attached first
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
     #[test]
     fn static_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -929,7 +942,7 @@ mod tests {
         assert_rdpsnd_playback(&mut connector)
     }
 
-    // oracle: mutant drop dynamic playback when smartcard RDPDR is attached afterward
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
     #[test]
     fn dynamic_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -944,7 +957,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: mutant drop dynamic playback when smartcard RDPDR is attached first
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
     #[test]
     fn dynamic_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -959,7 +972,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: mutant drop proxy playback when smartcard RDPDR is attached afterward
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
     #[test]
     fn playback_proxy_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -974,7 +987,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: mutant drop proxy playback when smartcard RDPDR is attached first
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
     #[test]
     fn playback_proxy_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -989,7 +1002,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: mutant drop native playback when smartcard RDPDR is attached afterward
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
     #[test]
     fn native_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -1003,7 +1016,7 @@ mod tests {
         assert_native_playback(&mut connector)
     }
 
-    // oracle: mutant drop native playback when smartcard RDPDR is attached first
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
     #[test]
     fn native_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;

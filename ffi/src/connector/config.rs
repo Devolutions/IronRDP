@@ -148,6 +148,7 @@ pub mod ffi {
         /// The connector asks for audio only when a playback channel is attached when the connection starts,
         /// not counting the silent RDPSND channel installed for drive or smartcard redirection.
         /// Otherwise it asks for no audio.
+        /// See the [playback request intent](https://github.com/Devolutions/IronRDP/blob/master/ffi/src/connector/INTENT.md#playback-request).
         Client,
         /// Leave audio playing on the remote computer.
         Server,
