@@ -152,6 +152,7 @@ async fn callback_receives_initial_changed_and_reactivated_layouts() {
         SecurityConfig {
             enable_credssp: true,
             enable_standard_rdp_security: false,
+            empty_client_info_password: false,
         },
     );
     let session = Session {

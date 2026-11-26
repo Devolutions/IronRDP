@@ -224,6 +224,15 @@ export function keyboardLayout(layoutId: number): Extension {
     return new Extension('keyboard_layout', layoutId);
 }
 
+/**
+ * Keep the password out of the Client Info PDU (MS-RDPBCGR 2.2.1.11.1.1), which a gateway that terminates
+ * the server's TLS reads in clear. With CredSSP the server has the credentials already; without it, the server
+ * asks for the password at its own sign-in screen.
+ */
+export function emptyClientInfoPassword(enable: boolean): Extension {
+    return new Extension('empty_client_info_password', enable);
+}
+
 // --- RDCleanPath ---
 
 export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';

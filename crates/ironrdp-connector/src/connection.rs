@@ -2369,7 +2369,7 @@ fn create_client_info_pdu(
         | ClientInfoFlags::ENABLE_WINDOWS_KEY
         | ClientInfoFlags::MAXIMIZE_SHELL;
 
-    if config.autologon && !entra_auth {
+    if config.autologon && !entra_auth && !config.empty_client_info_password {
         flags |= ClientInfoFlags::AUTOLOGON;
     }
 
@@ -2413,7 +2413,7 @@ fn create_client_info_pdu(
     let client_info = ClientInfo {
         credentials: Credentials {
             username: config.credentials.username().unwrap_or("").to_owned(),
-            password: if entra_auth || remote_guard {
+            password: if entra_auth || remote_guard || config.empty_client_info_password {
                 String::new()
             } else {
                 config.credentials.secret().to_owned()
@@ -2492,6 +2492,7 @@ mod tests {
                 password: "test".into(),
             },
             domain: None,
+            empty_client_info_password: false,
             client_build: 0,
             client_name: "test".into(),
             keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
@@ -2556,6 +2557,7 @@ mod tests {
                 password: "test".into(),
             },
             domain: None,
+            empty_client_info_password: false,
             client_build: 0,
             client_name: "test".into(),
             keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
@@ -2622,6 +2624,7 @@ mod tests {
                 password: "test".into(),
             },
             domain: None,
+            empty_client_info_password: false,
             client_build: 0,
             client_name: "test".into(),
             keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
@@ -2654,6 +2657,101 @@ mod tests {
             support_dyn_vc_gfx_protocol: false,
             rdp_version: gcc::RdpVersion::V5_PLUS,
         }
+    }
+
+    /// The Info Packet of `config`, for a logon with the given Entra ID and Remote Credential Guard state.
+    fn info_packet(config: &Config, entra_auth: bool, remote_guard: bool) -> ironrdp_pdu::rdp::client_info::ClientInfo {
+        create_client_info_pdu(
+            config,
+            &"127.0.0.1:3389".parse().unwrap(),
+            None,
+            None,
+            entra_auth,
+            remote_guard,
+        )
+        .client_info
+    }
+
+    #[test]
+    fn client_info_carries_the_credssp_password_by_default() {
+        // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (the Info Packet's Password is the logon password)
+        assert_eq!(info_packet(&test_config(), false, false).credentials.password, "test");
+    }
+
+    #[test]
+    fn an_empty_client_info_password_is_sent_empty() {
+        // oracle: mutant the flag ignored
+        let mut config = test_config();
+        config.empty_client_info_password = true;
+
+        assert_eq!(info_packet(&config, false, false).credentials.password, "");
+    }
+
+    #[test]
+    fn an_entra_id_logon_sends_an_empty_password() {
+        // oracle: mutant the CredSSP password sent to an Entra ID logon
+        assert_eq!(info_packet(&test_config(), true, false).credentials.password, "");
+    }
+
+    #[test]
+    fn a_remote_credential_guard_logon_sends_an_empty_password() {
+        // oracle: mutant the CredSSP password sent to a Remote Credential Guard logon
+        assert_eq!(info_packet(&test_config(), false, true).credentials.password, "");
+    }
+
+    #[test]
+    fn an_empty_client_info_password_empties_a_smart_card_pin_too() {
+        // oracle: mutant the flag skipped for a smart card PIN, or the PIN flag dropped with the PIN
+        let mut config = test_config();
+        config.credentials = Credentials::SmartCard {
+            pin: "1234".into(),
+            config: None,
+        };
+        config.empty_client_info_password = true;
+
+        let client_info = info_packet(&config, false, false);
+        assert_eq!(client_info.credentials.password, "");
+        assert!(client_info.flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN));
+    }
+
+    #[test]
+    fn an_entra_id_logon_requests_no_autologon() {
+        // oracle: mutant INFO_AUTOLOGON requested for an Entra ID logon, which carries no password
+        let mut config = test_config();
+        config.autologon = true;
+
+        assert!(
+            !info_packet(&config, true, false)
+                .flags
+                .contains(ClientInfoFlags::AUTOLOGON)
+        );
+    }
+
+    #[test]
+    fn autologon_is_requested_with_the_password() {
+        // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_AUTOLOGON requests an auto logon with the included password)
+        let mut config = test_config();
+        config.autologon = true;
+
+        assert!(
+            info_packet(&config, false, false)
+                .flags
+                .contains(ClientInfoFlags::AUTOLOGON)
+        );
+    }
+
+    #[test]
+    fn an_empty_client_info_password_requests_no_autologon() {
+        // oracle: mutant INFO_AUTOLOGON requested with an empty password
+        let mut config = test_config();
+        config.autologon = true;
+        config.empty_client_info_password = true;
+
+        assert!(
+            !info_packet(&config, false, false)
+                .flags
+                .contains(ClientInfoFlags::AUTOLOGON)
+        );
     }
 
     #[test]
@@ -2717,6 +2815,7 @@ mod tests {
                 }],
             }),
             desktop_scale_factor: 0,
+            empty_client_info_password: false,
             desktop_physical_size: None,
             desktop_orientation: None,
             device_scale_factor: None,

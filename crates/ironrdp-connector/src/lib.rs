@@ -305,6 +305,18 @@ pub struct Config {
     pub enable_standard_rdp_security: bool,
     pub credentials: Credentials,
     pub domain: Option<String>,
+    /// Sends an empty password in the Info Packet ([\[MS-RDPBCGR\] 2.2.1.11.1.1]) in place of the one in
+    /// [`credentials`](Self::credentials), and requests no auto logon.
+    ///
+    /// A gateway that terminates the server's TLS reads the Info Packet in clear, while with CredSSP the server
+    /// has the credentials already; without CredSSP, the server then asks for the password at its sign-in screen.
+    /// The default `false` sends the CredSSP password, as before.
+    /// An Entra ID or Remote Credential Guard logon sends an empty password either way.
+    /// With smart card credentials the PIN is emptied the same way, and `INFO_PASSWORD_IS_SC_PIN` still marks the
+    /// field: with CredSSP the server has the PIN already.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+    pub empty_client_info_password: bool,
     /// The build number of the client.
     pub client_build: u32,
     /// Name of the client computer

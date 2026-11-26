@@ -2717,6 +2717,7 @@ impl ConfigBuilder {
                 password: self.password.unwrap_or_default(),
             },
             domain: self.domain,
+            empty_client_info_password: false,
             enable_tls,
             enable_credssp,
             enable_standard_rdp_security,

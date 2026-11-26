@@ -979,6 +979,7 @@ mod tests {
                 password: "test".into(),
             },
             domain: None,
+            empty_client_info_password: false,
             client_build: 0,
             client_name: "test".into(),
             keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
