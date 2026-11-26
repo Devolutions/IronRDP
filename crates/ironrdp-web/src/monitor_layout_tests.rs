@@ -6,7 +6,6 @@ use ironrdp::connector::connection_activation::ConnectionActivationFactory;
 use ironrdp::pdu::gcc::{Monitor, MonitorFlags, RdpVersion};
 use ironrdp::pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndication};
 use ironrdp::pdu::rdp::capability_sets::{DemandActive, InputFlags, ServerDemandActive};
-use ironrdp::pdu::rdp::client_info::CompressionType;
 use ironrdp::pdu::rdp::finalization_messages::{FontPdu, MonitorLayoutPdu};
 use ironrdp::pdu::rdp::headers::{
     CompressionFlags, ServerDeactivateAll, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
