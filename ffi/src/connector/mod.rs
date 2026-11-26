@@ -9,7 +9,9 @@ pub(crate) struct RdpdrConfiguration {
     smartcard: bool,
     /// The playback mode the application chose, kept apart from the connector configuration
     /// so the request can be decided again if the first connection step fails.
-    /// See the [playback request intent](https://github.com/Devolutions/IronRDP/blob/master/ffi/src/connector/INTENT.md#playback-request).
+    /// See the [playback request intent].
+    ///
+    /// [playback request intent]: https://github.com/Devolutions/IronRDP/blob/master/ffi/src/connector/INTENT.md#playback-request
     playback_choice: Option<ironrdp::connector::AudioPlaybackMode>,
     /// INVARIANT: This is true only while the automatically installed silent RDPSND channel is present.
     compatibility_rdpsnd: bool,
@@ -35,6 +37,18 @@ fn connection_not_started(connector: &ironrdp::connector::ClientConnector) -> bo
         connector.state,
         ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
     )
+}
+
+/// Fails with `message` once the connector has sent its first connection PDU.
+fn ensure_not_started(
+    connector: &ironrdp::connector::ClientConnector,
+    message: &'static str,
+) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+    if connection_not_started(connector) {
+        Ok(())
+    } else {
+        Err(message.into())
+    }
 }
 
 /// Decides the audio playback request from the channels attached when the connection starts,
@@ -220,9 +234,7 @@ pub mod ffi {
                 .0
                 .as_mut()
                 .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
-            if !super::connection_not_started(connector) {
-                return Err("RDPSND must be attached before connecting".into());
-            }
+            super::ensure_not_started(connector, "RDPSND must be attached before connecting")?;
             if self.2.compatibility_rdpsnd {
                 self.2.compatibility_rdpsnd = false;
                 return Ok(());
@@ -257,9 +269,7 @@ pub mod ffi {
             if self.1.is_some() {
                 return Err("native audio is already attached to this connector".into());
             }
-            if !super::connection_not_started(connector) {
-                return Err("native audio must be attached before connecting".into());
-            }
+            super::ensure_not_started(connector, "native audio must be attached before connecting")?;
             audio.0.attach(connector, self.2.compatibility_rdpsnd)?;
             if audio.0.has_playback() {
                 self.2.compatibility_rdpsnd = false;
@@ -292,9 +302,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            if !super::connection_not_started(connector) {
-                return Err("RDPDR must be attached before connecting".into());
-            }
+            super::ensure_not_started(connector, "RDPDR must be attached before connecting")?;
             if self.2.smartcard {
                 return Err("smartcard RDPDR is already configured".into());
             }
@@ -349,9 +357,7 @@ pub mod ffi {
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            if !super::connection_not_started(connector) {
-                return Err("dynamic channels must be attached before connecting".into());
-            }
+            super::ensure_not_started(connector, "dynamic channels must be attached before connecting")?;
 
             let capture = audio_channel_kind(processor.channel_name()) == Some(AudioChannelKind::Capture);
             let drdynvc = match connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
@@ -463,9 +469,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            if !super::connection_not_started(connector) {
-                return Err("dynamic channels must be attached before connecting".into());
-            }
+            super::ensure_not_started(connector, "dynamic channels must be attached before connecting")?;
 
             let mut channel_names = std::collections::BTreeSet::new();
             for channel_name in &config.channel_names {
@@ -766,7 +770,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2538#discussion_r4708091552
+    // oracle: mutant accept a playback DVC after the playback request was decided
     #[test]
     fn playback_dvc_after_first_step_is_rejected() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -1187,7 +1191,7 @@ mod tests {
 
     // oracle: mutant report success when a foreign RDPSND channel blocks the attachment
     #[test]
-    fn foreign_rdpsnd_name_collision_preserves_channels_and_playback() -> Result<(), &'static str> {
+    fn foreign_rdpsnd_name_collision_preserves_channels_and_requests_no_playback() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
         add_test_static_channel(&mut connector, "rdpsnd")?;
         let channels = connector.0.as_ref().ok_or("connector")?.static_channels.len();
@@ -1203,7 +1207,7 @@ mod tests {
 
     // oracle: mutant report success when RDPSND attachment lacks capacity
     #[test]
-    fn insufficient_rdpsnd_capacity_preserves_channels_and_playback() -> Result<(), &'static str> {
+    fn insufficient_rdpsnd_capacity_preserves_channels_and_requests_no_playback() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
         add_test_static_channels(&mut connector, ironrdp::svc::MAX_STATIC_CHANNELS)?;
 
