@@ -1975,8 +1975,8 @@ enum PreemptRace<S> {
     Probed(usize, Option<AuthenticatedConnection<S>>),
 }
 
-/// The first probe in `probes` to finish, with its index. Pending while none
-/// has.
+/// The first probe in `probes` to finish, with its index. It stays pending
+/// while none has finished.
 ///
 /// INVARIANT: pending forever on an empty pool; callers gate on it being
 /// non-empty.
@@ -3409,6 +3409,12 @@ const CANDIDATE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// where a per-address limit belongs (a rate limiter, an allowlist). When the
 /// pool is full, newcomers wait in the listen backlog until a slot frees.
 /// Each slot costs a pending handshake's buffers.
+///
+/// The pool bounds what one stalled handshake costs; it doesn't stop a peer
+/// that keeps eight open from filling it. Limiting that per address is the
+/// embedder's job, in `on_accept`. A connection with no peer address never
+/// reaches `on_accept`, so an embedder serving such a transport needs its own
+/// limit in front of the server.
 const MAX_CONCURRENT_CANDIDATES: usize = 8;
 
 /// How long the accept loop will wait, AFTER the live session has ended, for a
@@ -5089,7 +5095,8 @@ impl RdpServer {
                                     let first_winner = async {
                                         while !probes.is_empty() {
                                             let (index, candidate) = next_probe(&mut probes).await;
-                                            // Upholds the pool's INVARIANT.
+                                            // Upholds the pool's INVARIANT. The removed probe is a
+                                            // `#[must_use]` future, hence the explicit drop.
                                             drop(probes.swap_remove(index));
                                             if candidate.is_some() {
                                                 return candidate;
@@ -5161,7 +5168,8 @@ impl RdpServer {
                                 warn!(%error, "accept failed while a session was live");
                             }
                             PreemptRace::Probed(index, candidate) => {
-                                // Upholds the pool's INVARIANT.
+                                // Upholds the pool's INVARIANT. The removed probe is a
+                                // `#[must_use]` future, hence the explicit drop.
                                 drop(probes.swap_remove(index));
                                 // `negotiate_candidate` already logged the
                                 // reason when it declines, so there is nothing
@@ -8343,6 +8351,8 @@ mod preempt_tests {
                 // bare `probe.await` and never come back.
                 drop(client_a);
 
+                // oracle: mutant an unbounded await on a candidate when the
+                // session ends wedges the accept loop: neither check passes.
                 // The server must still be answering its event channel. With
                 // the unbounded await this never resolves.
                 let responsive = tokio::time::timeout(Duration::from_secs(3), async {
@@ -8415,19 +8425,31 @@ mod preempt_tests {
     /// Negotiation Response within `wait`, and stays open after it.
     async fn negotiated(stream: &mut TcpStream, wait: Duration) -> bool {
         // oracle: spec MS-RDPBCGR §2.2.1.2 and §2.2.1.2.1: a Connection Confirm
-        // with a negotiation response is 19 bytes (TPKT 4, X.224 CC 7, RDP_NEG_RSP
-        // 8) and RDP_NEG_RSP's type byte is 0x02 (an RDP_NEG_FAILURE is 0x03).
-        let mut confirm = [0u8; 19];
+        // with a negotiation response is a TPKT header, an X.224 Connection
+        // Confirm and an RDP_NEG_RSP, whose type byte is 0x02 (an
+        // RDP_NEG_FAILURE is 0x03).
+        const TPKT_HEADER: usize = 4;
+        const X224_CONNECTION_CONFIRM: usize = 7;
+        const RDP_NEG_RSP: usize = 8;
+        const CONFIRM: usize = TPKT_HEADER + X224_CONNECTION_CONFIRM + RDP_NEG_RSP;
+        const TYPE_RDP_NEG_RSP: u8 = 0x02;
+        let mut confirm = [0u8; CONFIRM];
         match tokio::time::timeout(wait, stream.read_exact(&mut confirm)).await {
             Ok(Ok(_)) => {}
             _ => return false,
         }
+        // TPKT: version 3, reserved, then the frame's big-endian length.
+        let tpkt_length = u8::try_from(CONFIRM).unwrap();
         assert_eq!(
-            confirm[..4],
-            [0x03, 0x00, 0x00, 19],
-            "not a 19-byte TPKT frame: {confirm:02x?}"
+            confirm[..TPKT_HEADER],
+            [0x03, 0x00, 0x00, tpkt_length],
+            "not a {CONFIRM}-byte TPKT frame: {confirm:02x?}"
         );
-        assert_eq!(confirm[11], 0x02, "not an RDP_NEG_RSP: {confirm:02x?}");
+        assert_eq!(
+            confirm[TPKT_HEADER + X224_CONNECTION_CONFIRM],
+            TYPE_RDP_NEG_RSP,
+            "not an RDP_NEG_RSP: {confirm:02x?}"
+        );
         // Negotiated, so the server keeps the connection and waits for the
         // client's next PDU: nothing more arrives, and no EOF.
         let mut more = [0u8; 1];
@@ -8437,10 +8459,7 @@ mod preempt_tests {
     }
 
     /// Under `Preempt`, a candidate that stalls its handshake must not stop
-    /// another newcomer from being negotiated. With a single probe slot, every
-    /// later connection waited in the listen backlog until the stalled one
-    /// timed out (`CANDIDATE_NEGOTIATION_TIMEOUT`), so a few silent sockets,
-    /// reopened as they time out, kept the server from answering anyone.
+    /// another newcomer from being negotiated (see `MAX_CONCURRENT_CANDIDATES`).
     #[tokio::test]
     async fn a_stalled_candidate_does_not_block_other_candidates() {
         let local = task::LocalSet::new();
@@ -8450,12 +8469,14 @@ mod preempt_tests {
 
                 // A holds the connection being served, B a candidate slot;
                 // both connect and then say nothing.
-                let _client_a = TcpStream::connect(addr).await.unwrap();
+                let client_a = TcpStream::connect(addr).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let _client_b = TcpStream::connect(addr).await.unwrap();
+                let client_b = TcpStream::connect(addr).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // C negotiates while B is still stalled.
+                // oracle: mutant a pool of one (`MAX_CONCURRENT_CANDIDATES = 1`)
+                // leaves C in the backlog behind B.
                 let mut client_c = TcpStream::connect(addr).await.unwrap();
                 send_connection_request(&mut client_c).await;
                 assert!(
@@ -8463,8 +8484,14 @@ mod preempt_tests {
                     "a newcomer was not negotiated while another candidate was stalled"
                 );
 
+                // A connection mid-handshake isn't interrupted by Quit, so end
+                // the clients' connections first.
+                drop((client_a, client_b, client_c));
                 let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
-                let _ = tokio::time::timeout(Duration::from_secs(3), run_task).await;
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(3), run_task).await.is_ok(),
+                    "the server ignored Quit"
+                );
             })
             .await;
     }
@@ -8479,7 +8506,7 @@ mod preempt_tests {
             .run_until(async move {
                 let (addr, event_sender, run_task) = spawn_preempt_server().await;
 
-                let _client_a = TcpStream::connect(addr).await.unwrap();
+                let client_a = TcpStream::connect(addr).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 let mut stalled = Vec::new();
                 for _ in 0..MAX_CONCURRENT_CANDIDATES {
@@ -8489,6 +8516,8 @@ mod preempt_tests {
 
                 let mut newcomer = TcpStream::connect(addr).await.unwrap();
                 send_connection_request(&mut newcomer).await;
+                // oracle: mutant an unbounded pool (no `room` gate on accept)
+                // negotiates the newcomer at once.
                 assert!(
                     !negotiated(&mut newcomer, Duration::from_millis(500)).await,
                     "a newcomer was negotiated with the pool full"
@@ -8501,8 +8530,14 @@ mod preempt_tests {
                     "the newcomer was not negotiated once a slot freed"
                 );
 
+                // A connection mid-handshake isn't interrupted by Quit, so end
+                // the clients' connections first.
+                drop((client_a, stalled, newcomer));
                 let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
-                let _ = tokio::time::timeout(Duration::from_secs(3), run_task).await;
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(3), run_task).await.is_ok(),
+                    "the server ignored Quit"
+                );
             })
             .await;
     }
@@ -8536,13 +8571,22 @@ mod preempt_tests {
 
                 // C gets its Connection Confirm and stays connected; had its
                 // probe been dropped, the read would end at EOF instead.
+                // oracle: mutants dropping the candidates when the session ends,
+                // or ending the wait on the first candidate to finish (B), fail
+                // here.
                 assert!(
                     negotiated(&mut client_c, Duration::from_secs(3)).await,
                     "the candidate that authenticated was dropped at the handoff"
                 );
 
+                // A connection mid-handshake isn't interrupted by Quit, so end
+                // the clients' connections first.
+                drop(client_c);
                 let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
-                let _ = tokio::time::timeout(Duration::from_secs(3), run_task).await;
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(3), run_task).await.is_ok(),
+                    "the server ignored Quit"
+                );
             })
             .await;
     }
