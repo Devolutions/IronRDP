@@ -664,10 +664,11 @@ pub(crate) async fn connect_udp_with_datagram_io<S: DatagramIo>(
     // Phase 5: Set up data channels and spawn the read pump
     let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(64);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<TunnelMessage>(64);
+    let reply_tx = outgoing_tx.clone();
 
     // Read pump: TLS → RDPEMT decode → channel
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
-        tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx).await
+        tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx, &reply_tx).await
     }));
 
     // Write pump: channel → RDPEMT encode → TLS
@@ -895,9 +896,10 @@ async fn accept_udp_after_initial_datagram<S: DatagramIo>(
     // Phase 6: Set up data channels and spawn pumps (identical to client side)
     let (incoming_tx, incoming_rx) = mpsc::channel::<TunnelMessage>(64);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<TunnelMessage>(64);
+    let reply_tx = outgoing_tx.clone();
 
     let pump_handle = AbortOnDrop::new(tokio::spawn(async move {
-        tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx).await
+        tunnel_data_loop(&mut tls_read, &mut tunnel, &incoming_tx, &reply_tx).await
     }));
 
     // Write pump: channel → RDPEMT encode → TLS
