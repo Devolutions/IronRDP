@@ -154,6 +154,46 @@ fn html_failure() {
     assert!(cf_html_to_plain_html(b"StartFragment:999\r\nEndFragment:9999\r\n<html>nopers</html>").is_err());
 }
 
+/// `CF_HTML` the way the Windows 11 Photos app writes it with each copied image.
+/// Its markers are `<!--StartFragment -->` and `<!--EndFragment -->`, with a space before `-->`.
+fn photos_cf_html(start_marker: &str, end_marker: &str) -> Vec<u8> {
+    let fragment = "<p><img src=\"file:///C:/Users/user/Pictures/photo.jpg\"></p>";
+    let before = format!("<!DOCTYPE><HTML><HEAD></HEAD><BODY>{start_marker}");
+    let after = format!("{end_marker}</BODY></HTML>");
+    let header_len =
+        "Version:1.0\r\nStartHTML:00000000\r\nEndHTML:00000000\r\nStartFragment:00000000\r\nEndFragment:00000000\r\n"
+            .len();
+    let start_fragment = header_len + before.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + after.len();
+    let mut out = format!(
+        "Version:1.0\r\nStartHTML:{header_len:08}\r\nEndHTML:{end_html:08}\r\nStartFragment:{start_fragment:08}\r\nEndFragment:{end_fragment:08}\r\n{before}{fragment}{after}"
+    )
+    .into_bytes();
+    out.push(0); // The clipboard data is null-terminated.
+    out
+}
+
+#[test]
+fn cf_html_with_space_before_marker_end_is_read() {
+    // oracle: reference Windows 11 Photos app clipboard (marker form and header layout as it writes them)
+    let input = photos_cf_html("<!--StartFragment -->", "<!--EndFragment -->");
+    assert_eq!(
+        cf_html_to_plain_html(&input).unwrap(),
+        "<p><img src=\"file:///C:/Users/user/Pictures/photo.jpg\"></p>"
+    );
+    assert_eq!(validate_cf_html(&input).unwrap(), input.len() - 1);
+}
+
+#[test]
+fn cf_html_without_fragment_markers_is_rejected() {
+    // oracle: mutant accepting any comment around the fragment offsets
+    let input = photos_cf_html("<!--Start Fragment-->", "<!--EndFragment-->");
+    assert!(cf_html_to_plain_html(&input).is_err());
+    let input = photos_cf_html("<!--StartFragment-->", "<!--EndFragment- ->");
+    assert!(cf_html_to_plain_html(&input).is_err());
+}
+
 #[test]
 fn test_cf_html_to_text() {
     let input = include_bytes!("../../test_data/pdu/clipboard/cf_html.pdu");

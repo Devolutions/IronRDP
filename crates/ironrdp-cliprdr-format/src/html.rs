@@ -68,8 +68,6 @@ impl CfHtmlHeaders<'_> {
 
 fn parse_cf_html(input: &[u8]) -> Result<CfHtml<'_>, HtmlError> {
     const EOL_CONTROL_CHARS: &[u8] = b"\r\n";
-    const START_FRAGMENT_MARKER: &[u8] = b"<!--StartFragment-->";
-    const END_FRAGMENT_MARKER: &[u8] = b"<!--EndFragment-->";
 
     let mut headers = CfHtmlHeaders::default();
     let mut header_len = 0;
@@ -87,9 +85,7 @@ fn parse_cf_html(input: &[u8]) -> Result<CfHtml<'_>, HtmlError> {
         return Err(HtmlError::InvalidFormat);
     }
 
-    let marker_start = start_fragment
-        .checked_sub(START_FRAGMENT_MARKER.len())
-        .ok_or(HtmlError::InvalidFormat)?;
+    let marker_start = start_fragment_marker(input, start_fragment).ok_or(HtmlError::InvalidFormat)?;
     let header_boundary = match headers.start_html {
         Some(-1) => marker_start,
         Some(start) => usize::try_from(start).map_err(|_| HtmlError::InvalidConversion)?,
@@ -102,15 +98,7 @@ fn parse_cf_html(input: &[u8]) -> Result<CfHtml<'_>, HtmlError> {
         return Err(HtmlError::InvalidFormat);
     }
 
-    if input.get(marker_start..start_fragment) != Some(START_FRAGMENT_MARKER) {
-        return Err(HtmlError::InvalidFormat);
-    }
-    let marker_end = end_fragment
-        .checked_add(END_FRAGMENT_MARKER.len())
-        .ok_or(HtmlError::InvalidFormat)?;
-    if input.get(end_fragment..marker_end) != Some(END_FRAGMENT_MARKER) {
-        return Err(HtmlError::InvalidFormat);
-    }
+    let marker_end = end_fragment_marker(input, end_fragment).ok_or(HtmlError::InvalidFormat)?;
 
     let payload_len = match (headers.start_html, headers.end_html) {
         (Some(-1), Some(-1)) => marker_end,
@@ -180,6 +168,37 @@ fn parse_cf_html(input: &[u8]) -> Result<CfHtml<'_>, HtmlError> {
             next = next.checked_add(1).ok_or(HtmlError::InvalidConversion)?;
         }
         Ok(next)
+    }
+
+    // The fragment sits between `<!--StartFragment-->` and `<!--EndFragment-->`.
+    // Some Windows writers (the Windows 11 Photos app) put a space before `-->`, so whitespace there is accepted.
+
+    /// Start of the start marker that ends exactly at `start_fragment`.
+    fn start_fragment_marker(input: &[u8], start_fragment: usize) -> Option<usize> {
+        const MARKER: &[u8] = b"<!--StartFragment";
+        let before = input.get(..start_fragment)?.strip_suffix(b"-->")?;
+        let text_len = before
+            .iter()
+            .rposition(|byte| !byte.is_ascii_whitespace())?
+            .checked_add(1)?;
+        if !before.get(..text_len)?.ends_with(MARKER) {
+            return None;
+        }
+        text_len.checked_sub(MARKER.len())
+    }
+
+    /// End of the end marker that starts exactly at `end_fragment`.
+    fn end_fragment_marker(input: &[u8], end_fragment: usize) -> Option<usize> {
+        const MARKER: &[u8] = b"<!--EndFragment";
+        let after = input.get(end_fragment..)?.strip_prefix(MARKER)?;
+        let spaces = after.iter().take_while(|byte| byte.is_ascii_whitespace()).count();
+        if !after.get(spaces..)?.starts_with(b"-->") {
+            return None;
+        }
+        end_fragment
+            .checked_add(MARKER.len())?
+            .checked_add(spaces)?
+            .checked_add(3)
     }
 
     fn parse_offset(value: &str) -> Result<i64, HtmlError> {
