@@ -353,7 +353,11 @@ pub struct Config {
     /// If true, local audio playback is enabled and `INFO_NOAUDIOPLAYBACK` is left clear
     /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
     ///
-    /// Prefer [`audio_playback_mode`](Self::audio_playback_mode), which can also express playing on the server.
+    /// Ignored when [`audio_playback_mode`](Self::audio_playback_mode) is set.
+    #[deprecated(
+        since = "0.13.0",
+        note = "set `audio_playback_mode`, which can also express playing on the server"
+    )]
     pub enable_audio_playback: bool,
     /// If true, client microphone capture is enabled and `INFO_AUDIOCAPTURE` is set
     /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
@@ -435,6 +439,10 @@ pub struct Config {
 impl Config {
     /// The effective audio playback mode, falling back to `enable_audio_playback` when unset.
     #[must_use]
+    #[expect(
+        deprecated,
+        reason = "the legacy field still drives the mode when `audio_playback_mode` is unset"
+    )]
     pub fn audio_playback_mode(&self) -> AudioPlaybackMode {
         self.audio_playback_mode.unwrap_or(if self.enable_audio_playback {
             AudioPlaybackMode::Client

@@ -2471,6 +2471,10 @@ mod tests {
     use crate::{Config, Credentials, DesktopSize};
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "a `Config` literal must name every field, including the deprecated one"
+    )]
     fn remote_application_client_info_uses_rail_launch_data() {
         let config = Config {
             desktop_size: DesktopSize {
@@ -2535,6 +2539,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "a `Config` literal must name every field, including the deprecated one"
+    )]
     fn audio_capture_flag_is_set_when_enabled() {
         let mut config = Config {
             desktop_size: DesktopSize {
@@ -2601,6 +2609,10 @@ mod tests {
     }
 
     /// A plain client [`Config`] for tests to change what they look at.
+    #[expect(
+        deprecated,
+        reason = "a `Config` literal must name every field, including the deprecated one"
+    )]
     fn test_config() -> Config {
         Config {
             desktop_size: DesktopSize {
@@ -2701,6 +2713,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        deprecated,
+        reason = "a `Config` literal must name every field, including the deprecated one"
+    )]
     fn gcc_blocks_advertise_monitor_layout_when_supported() {
         let mut config = Config {
             desktop_size: DesktopSize {

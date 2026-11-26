@@ -58,6 +58,7 @@ pub mod ffi {
         // FIXME: Naming: since this is not a builder pattern, use "attach"?
         // FIXME: We need to create opaque for ironrdp::svc::StaticChannelSet
         /// Must use
+        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         pub fn with_static_channel_rdp_snd(&mut self) -> Result<(), Box<IronRdpError>> {
             use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 
@@ -138,6 +139,7 @@ pub mod ffi {
             Ok(())
         }
 
+        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         fn with_dvc<T>(&mut self, processor: T) -> Result<(), Box<IronRdpError>>
         where
             T: DvcClientProcessor + 'static,
@@ -258,6 +260,7 @@ pub mod ffi {
         /// This includes built-in channels and pipe proxies.
         ///
         /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
+        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         pub fn with_dynamic_channel_direct(&mut self, config: &DirectDvcConfig) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
@@ -507,6 +510,7 @@ mod tests {
 
     // oracle: mutant drop pre-existing playback state when attaching capture
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn static_playback_before_capture_preserves_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         connector.with_static_channel_rdp_snd().map_err(|_| "attach playback")?;
@@ -541,6 +545,7 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn static_playback_after_capture_advertises_both() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         connector
@@ -561,6 +566,7 @@ mod tests {
 
     // oracle: mutant allow native playback alongside static playback
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn existing_static_playback_rejects_native_playback_without_consuming_audio() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         connector.with_static_channel_rdp_snd().map_err(|_| "attach playback")?;
@@ -609,6 +615,7 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn playback_direct_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         connector
@@ -638,6 +645,7 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn playback_proxy_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         let capture = capture_audio()?;
@@ -655,6 +663,7 @@ mod tests {
 
     // oracle: mutant drop pre-existing playback DVC state when attaching capture
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn playback_proxy_attached_before_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         assert!(attach_pipe_proxy(
@@ -673,6 +682,7 @@ mod tests {
 
     // oracle: mutant drop pre-existing playback DVC state when attaching capture
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn lossy_playback_proxy_before_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         assert!(attach_pipe_proxy(
@@ -691,6 +701,7 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn lossy_playback_proxy_after_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         let capture = capture_audio()?;
@@ -737,6 +748,7 @@ mod tests {
 
     // oracle: mutant advertise audio for an unrelated dynamic channel
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn unrelated_proxy_does_not_advertise_audio() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         assert!(attach_pipe_proxy(&mut connector, "unrelated"));
@@ -749,6 +761,7 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn separately_attached_playback_survives_later_capture_configuration() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         connector
@@ -770,6 +783,7 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn separately_attached_playback_after_capture_is_advertised() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         let capture = capture_audio()?;
@@ -831,6 +845,7 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn reserved_pipe_proxy_rejects_all_descriptors_without_mutation() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
         let capture = capture_audio()?;

@@ -11882,6 +11882,7 @@ impl Control {
         }
     }
 
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn rpc_connect(&self, properties: PropertySet, log_directive: Option<String>) -> ironrdp_agent::ipc::Response {
         if self.state.get() != ConnectionState::Disconnected {
             return ironrdp_agent::ipc::Response::typed_error(

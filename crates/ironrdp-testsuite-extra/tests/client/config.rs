@@ -826,6 +826,7 @@ ironrdp_rdpdr:i:0
 }
 
 #[test]
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn audiomode_two_disables_audio_playback() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:2\n",
@@ -836,6 +837,7 @@ fn audiomode_two_disables_audio_playback() {
 }
 
 #[test]
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn audiomode_one_play_on_server_disables_local_playback() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:1\n",
@@ -846,6 +848,7 @@ fn audiomode_one_play_on_server_disables_local_playback() {
 }
 
 #[test]
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn audiomode_zero_enables_client_redirection() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:0\n",
@@ -856,6 +859,7 @@ fn audiomode_zero_enables_client_redirection() {
 }
 
 #[test]
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn invalid_audiomode_falls_back_to_audio_playback_enabled() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:99\n",
@@ -1478,6 +1482,7 @@ fn monitor_layout_is_preserved_in_connector_configuration() {
 }
 
 #[test]
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_redirect_enables_playback_channel() {
     use ironrdp_cfg::AudioMode;
 
@@ -1495,6 +1500,7 @@ fn with_audio_mode_redirect_enables_playback_channel() {
 }
 
 #[test]
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_play_on_server_disables_local_playback() {
     use ironrdp_cfg::AudioMode;
 
@@ -1509,6 +1515,7 @@ fn with_audio_mode_play_on_server_disables_local_playback() {
 }
 
 #[test]
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_disabled_suppresses_sound_channel() {
     use ironrdp_cfg::AudioMode;
 

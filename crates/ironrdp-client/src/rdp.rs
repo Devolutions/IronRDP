@@ -2457,6 +2457,7 @@ impl ironrdp_dvc::DvcChannelListener for DvcPipeProxyListener {
     clippy::too_many_arguments,
     reason = "the connector combines independent channel factories, carrier capabilities, and reconnect state"
 )]
+#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn build_connector(
     config: &Config,
     client_addr: SocketAddr,
@@ -8221,6 +8222,7 @@ mod tests {
 
     impl ironrdp_svc::SvcClientProcessor for CustomRdpsndChannel {}
 
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn build_rdpsnd_test_connector(
         builder: crate::config::ConfigBuilder,
         enable_audio_playback: bool,
@@ -8266,6 +8268,7 @@ mod tests {
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn custom_rdpsnd_static_channel_keeps_audio_playback_enabled() {
         let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
             test_config_builder().with_static_channel(|_| Some(CustomRdpsndChannel)),
@@ -8278,6 +8281,7 @@ mod tests {
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn custom_rdpsnd_static_channel_instances_keeps_audio_playback_enabled() {
         let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
             test_config_builder().with_static_channel_instances(|_| vec![CustomRdpsndChannel]),
@@ -8290,6 +8294,7 @@ mod tests {
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when playback is disabled)
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn custom_rdpsnd_static_channel_respects_disabled_audio_playback() {
         let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
             test_config_builder().with_static_channel(|_| Some(CustomRdpsndChannel)),
@@ -8302,6 +8307,7 @@ mod tests {
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when no playback channel is registered)
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn missing_rdpsnd_static_channel_disables_audio_playback() {
         let (connector, has_rdpsnd) = build_rdpsnd_test_connector(test_config_builder(), true);
 
@@ -8312,6 +8318,7 @@ mod tests {
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when only the no-op RDPDR companion channel is registered)
     #[cfg(feature = "rdpdr")]
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn noop_rdpsnd_companion_keeps_audio_playback_disabled() {
         let (connector, has_rdpsnd) = build_rdpsnd_test_connector(test_config_builder().with_rdpdr(true), true);
 
@@ -8322,6 +8329,7 @@ mod tests {
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND, even when RDPDR is enabled)
     #[cfg(feature = "rdpdr")]
     #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn custom_rdpsnd_with_rdpdr_keeps_audio_playback_enabled() {
         let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
             test_config_builder().with_rdpdr(true).with_static_channel(|_| {

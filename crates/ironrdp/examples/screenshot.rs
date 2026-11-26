@@ -234,6 +234,10 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[expect(
+    deprecated,
+    reason = "a `Config` literal must name every field, including the deprecated one"
+)]
 fn build_config(
     username: String,
     password: String,

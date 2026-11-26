@@ -2338,6 +2338,10 @@ impl ConfigBuilder {
     )]
     // `mut` is only required when the vmconnect default-port path mutates destination/properties.
     #[cfg_attr(not(any(feature = "vmconnect", feature = "gateway")), expect(unused_mut))]
+    #[expect(
+        deprecated,
+        reason = "a `Config` literal must name every field, including the deprecated one"
+    )]
     pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
