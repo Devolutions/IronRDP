@@ -3644,7 +3644,6 @@ dependencies = [
  "tracing",
  "visibility",
  "x509-cert",
- "zrip",
  "zstd-safe",
 ]
 
@@ -8726,9 +8725,9 @@ dependencies = [
 
 [[package]]
 name = "zstd-safe"
-version = "8.3.0"
+version = "7.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9ea9cc2576c2fcc104e9cec04f46e3ede564f4fbc206831e4ef7e859a4140d"
+checksum = "498d94ad68720c89b4fbe41b9090850651e68cb2dd9210ce7ffbff3a94653819"
 dependencies = [
  "zstd-sys",
 ]

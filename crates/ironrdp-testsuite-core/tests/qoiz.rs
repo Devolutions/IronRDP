@@ -1,8 +1,9 @@
-use ironrdp_server::{ZripCompressor, ZstdSafeCompressor};
+use ironrdp_server::QoizCompressor;
 use ironrdp_session::SessionResult;
 use ironrdp_session::{ZripDecompressor, ZstdSafeDecompressor};
 
-// Four updates of a single zstd stream, captured from the `zstd-safe` backend (the reference C implementation) for `payloads()`.
+// Four updates of a single zstd stream, captured from the `zstd-safe` backend
+// (the reference C implementation) for `payloads()`.
 const ZSTD_SAFE_STREAM: &[&[u8]] = &[
     &[
         0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x88, 0x44, 0x04, 0x00, 0x12, 0x88, 0x1d, 0x07, 0x10, 0x10, 0xdf, 0x30, 0xb3,
@@ -94,21 +95,13 @@ enum Backend {
     Zstd,
 }
 
-impl Backend {
-    /// A fresh compressor of this backend.
-    fn compressor(self) -> CompressFn {
-        match self {
-            Self::Zrip => {
-                let mut zrip = ZripCompressor::new().unwrap();
-                Box::new(move |input| zrip.compress(input).unwrap())
-            }
-            Self::Zstd => {
-                let mut zstd = ZstdSafeCompressor::new().unwrap();
-                Box::new(move |input| zstd.compress(input).unwrap())
-            }
-        }
-    }
+/// A fresh compressor.
+fn compressor() -> CompressFn {
+    let mut zstd = QoizCompressor::new().unwrap();
+    Box::new(move |input| zstd.compress(input).unwrap())
+}
 
+impl Backend {
     /// A fresh decompressor of this backend.
     fn decompressor(self) -> DecompressFn {
         match self {
@@ -126,47 +119,44 @@ impl Backend {
 
 // oracle: property round-trip
 #[rstest::rstest]
-fn compressor_decompressor_round_trip_matrix(
-    #[values(Backend::Zrip, Backend::Zstd)] enc: Backend,
-    #[values(Backend::Zrip, Backend::Zstd)] dec: Backend,
-) {
-    let mut compress = enc.compressor();
+fn compressor_decompressor_round_trip_matrix(#[values(Backend::Zrip, Backend::Zstd)] dec: Backend) {
+    let mut compress = compressor();
     let mut decompress = dec.decompressor();
 
     for (i, expected) in payloads().into_iter().enumerate() {
         assert_eq!(
             decompress(&compress(&expected)).unwrap(),
             expected,
-            "{enc:?} -> {dec:?}: update {i} differs"
+            "{dec:?}: update {i} differs"
         );
     }
 }
 
 // oracle: spec RFC 8878 §3.1.1 (a frame starts with the magic number 0xFD2FB528, stored little-endian)
 #[rstest::rstest]
-fn produces_a_zstd_frame(#[values(Backend::Zrip, Backend::Zstd)] enc: Backend) {
-    let compressed = enc.compressor()(&payload(0));
+fn produces_a_zstd_frame() {
+    let compressed = compressor()(&payload(0));
 
-    assert_eq!(compressed.get(..4), Some(ZSTD_MAGIC.as_slice()), "{enc:?}");
+    assert_eq!(compressed.get(..4), Some(ZSTD_MAGIC.as_slice()), "zstd frame");
 }
 
 // oracle: mutant compressing each update without the history of the earlier ones
 #[rstest::rstest]
-fn reuses_history_across_updates(#[values(Backend::Zrip, Backend::Zstd)] enc: Backend) {
-    let without_history = enc.compressor()(&payload(0)).len();
+fn reuses_history_across_updates() {
+    let without_history = compressor()(&payload(0)).len();
 
-    let mut compress = enc.compressor();
+    let mut compress = compressor();
     compress(&payload(0));
     compress(&payload(1));
     let with_history = compress(&payload(0)).len();
 
     assert!(
         with_history < without_history,
-        "{enc:?}: history did not shrink the repeated update: {with_history} bytes with, {without_history} bytes without"
+        "history did not shrink the repeated update: {with_history} bytes with, {without_history} bytes without"
     );
 }
 
-// oracle: reference zstd-safe capture and zrip capture of `payloads()` (the two backends decode each other's frames)
+// oracle: reference zstd-safe capture and zrip capture of `payloads()` (both decoders accept frames from either encoder)
 #[rstest::rstest]
 fn decompresses_fixed_stream(
     #[values(ZSTD_SAFE_STREAM, THIRD_PARTY_STREAM)] stream: &[&[u8]],
@@ -179,59 +169,71 @@ fn decompresses_fixed_stream(
     }
 }
 
-// oracle: the encoder always enables long distance matching, so repeats beyond the default window still match
-#[rstest::rstest]
-fn matches_against_distant_updates(#[values(Backend::Zrip, Backend::Zstd)] enc: Backend) {
+/// Updates whose last one repeats the first from 4 MiB back, beyond the default 2 MiB window at compression level 3.
+fn distant_updates() -> Vec<Vec<u8>> {
     const UPDATE_LEN: usize = 1 << 20;
 
-    // zrip stores blocks whose bytes look uniformly random without indexing them,
-    // so history made of flat noise could never be matched against.
-    let skewed_noise = |seed| {
-        let mut data = noise(seed, UPDATE_LEN);
-        data.iter_mut().for_each(|byte| *byte %= 64);
-        data
-    };
-
-    let first = skewed_noise(1);
+    let first = noise(1, UPDATE_LEN);
     let mut updates = vec![first.clone()];
-    updates.extend((2..5).map(skewed_noise));
+    updates.extend((2..5).map(|seed| noise(seed, UPDATE_LEN)));
     updates.push(first);
+    updates
+}
 
-    let mut compress = enc.compressor();
+// oracle: mutant compressing each update without reaching history beyond the default window
+#[rstest::rstest]
+fn matches_against_distant_updates() {
+    let updates = distant_updates();
+
+    let mut compress = compressor();
     let mut with_history = 0;
 
     for update in &updates {
         with_history = compress(update).len();
     }
 
-    let without_history = enc.compressor()(&updates[0]).len();
+    let without_history = compressor()(&updates[0]).len();
 
-    // At compression level 3 the default window size is 2 MiB, and the repeat lies 4 MiB back.
-    // Only long distance matching reaches it.
+    // Only long distance matching reaches the repeat.
     assert!(
         with_history * 100 < without_history,
-        "{enc:?}: repeated update did not match against distant history: {with_history} bytes with, {without_history} bytes without"
+        "repeated update did not match against distant history: {with_history} bytes with, {without_history} bytes without"
     );
+}
+
+// oracle: mutant decoding a back-reference beyond the default window incorrectly or rejecting the long-window frame
+#[rstest::rstest]
+fn decompresses_distant_history(#[values(Backend::Zrip, Backend::Zstd)] dec: Backend) {
+    let updates = distant_updates();
+
+    let mut compress = compressor();
+    let mut decompress = dec.decompressor();
+
+    for (i, expected) in updates.iter().enumerate() {
+        let compressed = compress(expected);
+        assert_eq!(
+            decompress(&compressed).unwrap(),
+            *expected,
+            "{dec:?}: update {i} differs"
+        );
+    }
 }
 
 // oracle: property round-trip
 #[rstest::rstest]
-fn round_trips_large_updates(
-    #[values(Backend::Zrip, Backend::Zstd)] enc: Backend,
-    #[values(Backend::Zrip, Backend::Zstd)] dec: Backend,
-) {
+fn round_trips_large_updates(#[values(Backend::Zrip, Backend::Zstd)] dec: Backend) {
     // The repetitive update expands far beyond the initial output estimate.
     // The noise compresses to more than its own size.
     let updates = [("repetitive", vec![0x42; 1 << 20]), ("noise", noise(1, 300 * 1024))];
 
-    let mut compress = enc.compressor();
+    let mut compress = compressor();
     let mut decompress = dec.decompressor();
 
     for (name, update) in &updates {
         assert_eq!(
             decompress(&compress(update)).unwrap(),
             *update,
-            "{enc:?} -> {dec:?}: {name} differs"
+            "{dec:?}: {name} differs"
         );
     }
 }
@@ -247,4 +249,13 @@ fn decompresses_empty_update(#[values(Backend::Zrip, Backend::Zstd)] dec: Backen
         assert_eq!(decompress(update).unwrap(), expected, "{dec:?}");
         assert_eq!(decompress(&[]).unwrap(), Vec::<u8>::new(), "{dec:?}");
     }
+}
+
+// oracle: mutant decoding an update whose predecessors were skipped instead of rejecting it
+// An update is only decodable after the ones before it, so joining mid-stream must fail rather than produce garbage.
+#[rstest::rstest]
+fn rejects_stream_joined_late(#[values(Backend::Zrip, Backend::Zstd)] dec: Backend) {
+    let result = dec.decompressor()(ZSTD_SAFE_STREAM[1]);
+
+    assert!(result.is_err(), "{dec:?}: expected an error, got {result:?}");
 }

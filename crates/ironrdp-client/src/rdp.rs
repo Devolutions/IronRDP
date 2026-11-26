@@ -2853,7 +2853,7 @@ fn build_connector(
     // Honor the runtime QOI/QOIZ codec toggles. Both codecs are compiled in and advertised by
     // default, but can be disabled at runtime; when disabled we drop them from the advertised
     // bitmap codec list so the server won't negotiate them.
-    #[cfg(any(feature = "qoi", any(feature = "qoiz-zrip", feature = "qoiz-zstd")))]
+    #[cfg(any(feature = "qoi", feature = "qoiz-zrip", feature = "qoiz-zstd"))]
     if let Some(bitmap) = connector_config.bitmap.as_mut() {
         use ironrdp_pdu::rdp::capability_sets::CodecProperty;
 

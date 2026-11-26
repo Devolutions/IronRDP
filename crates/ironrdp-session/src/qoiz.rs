@@ -65,7 +65,7 @@ mod zstd_safe_backend {
         #[cfg_attr(feature = "__test", visibility::make(pub))]
         pub(crate) fn decompress(&mut self, input: &[u8]) -> SessionResult<Vec<u8>> {
             let mut source = zstd_safe::InBuffer::around(input);
-            // Never start empty, or the buffer could not grow and the loop would never end.
+            // INVARIANT: the output buffer is never empty, or the loop could not grow it.
             let mut data = vec![0; input.len().max(1) * 4];
             let mut pos = 0;
 

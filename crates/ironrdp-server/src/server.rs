@@ -949,7 +949,7 @@ impl RdpServerOptions {
             .any(|codec| matches!(codec.property, CodecProperty::Qoi))
     }
 
-    #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
+    #[cfg(feature = "qoiz")]
     fn has_qoiz(&self) -> bool {
         self.codecs
             .0
@@ -6481,7 +6481,7 @@ impl RdpServer {
                             CodecProperty::Qoi if self.opts.has_qoi() => {
                                 update_codecs.set_qoi(Some(codec.id));
                             }
-                            #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
+                            #[cfg(feature = "qoiz")]
                             CodecProperty::QoiZ if self.opts.has_qoiz() => {
                                 update_codecs.set_qoiz(Some(codec.id));
                             }
