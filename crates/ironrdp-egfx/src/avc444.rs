@@ -196,20 +196,49 @@ impl Yuv444Frame {
         if !(left < right && top < bottom) {
             return Vec::new();
         }
-        let mut rgba = Vec::with_capacity((right - left) * (bottom - top) * 4);
-        for row in top..bottom {
+        let width = right - left;
+        let mut rgba = vec![0; width * (bottom - top) * 4];
+        for (row, out) in (top..bottom).zip(rgba.chunks_exact_mut(width * 4)) {
             let line = row * self.stride;
-            for col in left..right {
-                let at = line + col;
-                let (mut u, mut v) = (self.u[at], self.v[at]);
-                if row % 2 == 0 && col % 2 == 0 {
-                    // The block's other three samples are inside the padded planes: `stride` and
-                    // `rows` are even, and so are `row` and `col`.
-                    let below = at + self.stride;
-                    u = reverse_filter(u, self.u[at + 1], self.u[below], self.u[below + 1]);
-                    v = reverse_filter(v, self.v[at + 1], self.v[below], self.v[below + 1]);
+            let luma = &self.y[line + left..line + right];
+            let (u, v) = (&self.u[line..line + self.stride], &self.v[line..line + self.stride]);
+            let mut pixels = out.chunks_exact_mut(4).zip(luma);
+            if row % 2 == 0 {
+                // The row below is inside the padded planes: `rows` is even, and so is `row`.
+                let below = line + self.stride;
+                let (u_below, v_below) = (&self.u[below..below + self.stride], &self.v[below..below + self.stride]);
+                // Columns go in pairs that start at an even one, which is the one the filter
+                // applies to.
+                // A rectangle with an odd left edge starts at the second of a pair.
+                let mut col = left;
+                if col % 2 == 1 {
+                    if let Some((pixel, &y)) = pixels.next() {
+                        pixel.copy_from_slice(&yuv_to_rgba(y, u[col], v[col]));
+                    }
+                    col += 1;
                 }
-                rgba.extend_from_slice(&yuv_to_rgba(self.y[at], u, v));
+                // The pair's second sample is inside the padded planes even when the rectangle
+                // ends before it: `stride` is even, and so is the first sample's column.
+                let pairs = u[col..]
+                    .chunks_exact(2)
+                    .zip(v[col..].chunks_exact(2))
+                    .zip(u_below[col..].chunks_exact(2).zip(v_below[col..].chunks_exact(2)));
+                for ((u, v), (u_below, v_below)) in pairs {
+                    let Some((pixel, &y)) = pixels.next() else {
+                        break;
+                    };
+                    let filtered_u = reverse_filter(u[0], u[1], u_below[0], u_below[1]);
+                    let filtered_v = reverse_filter(v[0], v[1], v_below[0], v_below[1]);
+                    pixel.copy_from_slice(&yuv_to_rgba(y, filtered_u, filtered_v));
+                    let Some((pixel, &y)) = pixels.next() else {
+                        break;
+                    };
+                    pixel.copy_from_slice(&yuv_to_rgba(y, u[1], v[1]));
+                }
+            } else {
+                for ((pixel, &y), (&u, &v)) in pixels.zip(u[left..right].iter().zip(&v[left..right])) {
+                    pixel.copy_from_slice(&yuv_to_rgba(y, u, v));
+                }
             }
         }
         rgba

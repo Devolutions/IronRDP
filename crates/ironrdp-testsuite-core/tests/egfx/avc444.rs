@@ -472,6 +472,44 @@ fn a_converted_picture_reads_back_unchanged() {
     assert!(difference <= TOLERANCE, "difference {difference}");
 }
 
+// oracle: property round-trip
+#[rstest]
+#[case::odd_left_edge(5, 0, 20, 8)]
+#[case::odd_right_edge(4, 0, 19, 8)]
+#[case::odd_top_edge(4, 3, 20, 8)]
+#[case::odd_bottom_edge(4, 2, 20, 7)]
+#[case::odd_edges(3, 5, 17, 11)]
+#[case::one_pixel_at_an_even_position(6, 4, 7, 5)]
+#[case::one_pixel_at_an_odd_position(7, 5, 8, 6)]
+#[case::last_column_and_row(WIDTH - 1, HEIGHT - 1, WIDTH, HEIGHT)]
+fn a_rectangle_of_a_converted_picture_reads_back_unchanged(
+    #[case] left: u16,
+    #[case] top: u16,
+    #[case] right: u16,
+    #[case] bottom: u16,
+) {
+    let original = checkerboard(0);
+    let picture = Yuv444Frame::from_rgba(&original, WIDTH, HEIGHT).expect("picture");
+    let row_bytes = usize::from(WIDTH) * 4;
+    let expected: Vec<u8> = original
+        .chunks_exact(row_bytes)
+        .take(usize::from(bottom))
+        .skip(usize::from(top))
+        .flat_map(|row| &row[usize::from(left) * 4..usize::from(right) * 4])
+        .copied()
+        .collect();
+
+    let rect = ExclusiveRectangle {
+        left,
+        top,
+        right,
+        bottom,
+    };
+    let difference = max_difference(&picture.to_rgba(&rect), &expected);
+
+    assert!(difference <= TOLERANCE, "difference {difference}");
+}
+
 // oracle: spec MS-RDPEGFX §3.3.8.3.2
 #[rstest]
 #[case::avc444(Avc444Layout::V1)]
