@@ -5,8 +5,9 @@ use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::rdp::headers::{self, ShareControlPdu};
 use ironrdp_pdu::x224::{X224, X224Data};
 
-use crate::transport::flatten;
-use crate::{Plaintext, ReplayError};
+use ironrdp_capture::{Plaintext, flatten};
+
+use crate::ReplayError;
 
 /// A captured RDP static virtual channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
