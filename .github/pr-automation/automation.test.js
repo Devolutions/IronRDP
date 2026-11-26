@@ -6522,6 +6522,80 @@ test("automatic admission neutralizes a claim when post-validation observes a dr
   })), [{ check_run_id: 19, conclusion: "neutral", title: "Automation superseded" }]);
 });
 
+// The check-run listing can trail `checks.create` by seconds while the pull request is unchanged.
+const claimReviewWithListingLag = async ({ hiddenListings, listingRetries }) => {
+  const runs = [];
+  const updates = [];
+  const sleeps = [];
+  let hidden = hiddenListings;
+  const listRuns = () => {};
+  const gate = {
+    ok: true, force: false, head_sha: SHA, classificationValid: true,
+    classificationCheck: true, classificationId: 9, legitimacyStopped: false,
+    ciGreen: true, ciRunId: 1, ciRunAttempt: 1, ciSource: "listing",
+    reviewAtHead: false, policyEligible: true, labels: ["risk/low"],
+  };
+  const github = {
+    paginate: { iterator: async function* (method, parameters) {
+      if (method === listRuns) yield { data: [ciRun({ id: 1 })] };
+      else if (parameters.check_name === "AI classification") {
+        yield { data: [{
+          id: 9, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+          conclusion: "success", app: { slug: "github-actions" },
+        }] };
+      } else if (runs.length > 0 && hidden > 0) {
+        hidden -= 1;
+        yield { data: [] };
+      } else yield { data: runs };
+    } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        create: async (payload) => {
+          const claim = { id: 19, ...payload, app: { slug: "github-actions" } };
+          runs.push(claim);
+          return { data: claim };
+        },
+        update: async (payload) => updates.push(payload),
+      },
+      actions: {
+        getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }),
+        listWorkflowRunsForRepo: listRuns,
+      },
+      pulls: { get: async () => ({ data: { state: "open", draft: false, head: { sha: SHA } } }) },
+      issues: { get: async () => ({ data: { labels: [{ name: "risk/low" }] } }) },
+    },
+  };
+  const decision = await claimAutomaticLease({
+    github, owner: "Devolutions", repo: "IronRDP", kind: "review", headSha: SHA,
+    prNumber: 1, gate, runId: 7, attempt: 1,
+    listingRetries, sleep: async (ms) => { sleeps.push(ms); },
+  });
+  return { decision, updates, sleeps };
+};
+
+test("automatic review admission keeps a claim the check-run listing has not caught up to", async () => {
+  const { decision, updates, sleeps } = await claimReviewWithListingLag({
+    hiddenListings: 2, listingRetries: 3,
+  });
+  assert.equal(decision.owner, true, decision.reason);
+  assert.equal(decision.lease.checkRunId, 19);
+  assert.deepEqual(updates, []);
+  assert.equal(sleeps.length, 2);
+});
+
+test("automatic review admission neutralizes a claim the listing never shows", async () => {
+  const { decision, updates, sleeps } = await claimReviewWithListingLag({
+    hiddenListings: Infinity, listingRetries: 3,
+  });
+  assert.equal(decision.owner, false);
+  assert.equal(decision.reason, "lease claim is not listed");
+  assert.equal(sleeps.length, 3);
+  assert.deepEqual(updates.map(({ check_run_id, conclusion, output }) => ({
+    check_run_id, conclusion, title: output.title,
+  })), [{ check_run_id: 19, conclusion: "neutral", title: "Automation superseded" }]);
+});
+
 test("automatic leases rerun after terminal or missing owners and fail closed on malformed claims", async () => {
   const marker = leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 });
   const admit = async ({

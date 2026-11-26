@@ -52,8 +52,21 @@ async function ownerIsActive(github, lease) {
     throw error;
   }
 }
+// The check-run listing can trail `checks.create` by a few seconds.
+async function awaitListedClaim({
+  github, owner, repo, kind, headSha, checkRunId, retries, delayMs, sleep,
+}) {
+  for (let attempt = 0; ; attempt += 1) {
+    const runs = await readCanonicalRuns({ github, owner, repo, kind, headSha });
+    if (runs?.some((run) => run.id === checkRunId)) return true;
+    if (attempt >= retries) return false;
+    if (delayMs > 0) await sleep(delayMs);
+  }
+}
 async function claimAutomaticLease({
   github, owner, repo, kind, headSha, runId, attempt, allowSuccess = false, prNumber, gate,
+  listingRetries = 5, listingDelayMs = 2000,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
   const eligible = async (lease) => {
     if (prNumber === undefined) return true;
@@ -99,15 +112,25 @@ async function claimAutomaticLease({
     status: "in_progress", output: { title: "Automation in progress", summary: marker },
   });
   const lease = { kind, headSha, runId, attempt, checkRunId: claim.id, marker };
-  // An eligibility change during `create` makes this claim unusable. Complete only our new claim
-  // so a later admission may proceed without inheriting an active-looking lease.
-  if (!await eligible(lease)) {
+  // Complete only our new claim so a later admission may proceed without inheriting an
+  // active-looking lease.
+  const supersede = async (reason) => {
     await github.rest.checks.update({
       owner, repo, check_run_id: claim.id, status: "completed", conclusion: "neutral",
       output: { title: "Automation superseded", summary: marker },
     });
-    return { owner: false, available: true, reason: "pull request changed during lease claim" };
+    return { owner: false, available: true, reason };
+  };
+  // The review recheck reads lease ownership from the listing, so judging it before the listing
+  // shows the claim would supersede an unchanged pull request.
+  if (kind === "review" && prNumber !== undefined && !await awaitListedClaim({
+    github, owner, repo, kind, headSha, checkRunId: claim.id,
+    retries: listingRetries, delayMs: listingDelayMs, sleep,
+  })) {
+    return await supersede("lease claim is not listed");
   }
+  // An eligibility change during `create` makes this claim unusable.
+  if (!await eligible(lease)) return await supersede("pull request changed during lease claim");
   return {
     owner: true, available: true,
     lease,
