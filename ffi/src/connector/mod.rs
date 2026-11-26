@@ -1062,6 +1062,39 @@ mod tests {
         Ok(())
     }
 
+    // oracle: mutant report success when a foreign RDPSND channel blocks the attachment
+    #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
+    fn foreign_rdpsnd_name_collision_preserves_channels_and_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        add_test_static_channel(&mut connector, "rdpsnd")?;
+        let channels = connector.0.as_ref().ok_or("connector")?.static_channels.len();
+
+        assert!(connector.with_static_channel_rdp_snd().is_err());
+
+        let inner = connector.0.as_ref().ok_or("connector")?;
+        assert_eq!(inner.static_channels.len(), channels);
+        assert!(rdpsnd_channel_ptr(&connector).is_err());
+        assert!(!inner.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: mutant report success when RDPSND attachment lacks capacity
+    #[test]
+    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
+    fn insufficient_rdpsnd_capacity_preserves_channels_and_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        add_test_static_channels(&mut connector, ironrdp::svc::MAX_STATIC_CHANNELS)?;
+
+        assert!(connector.with_static_channel_rdp_snd().is_err());
+
+        let inner = connector.0.as_ref().ok_or("connector")?;
+        assert_eq!(inner.static_channels.len(), ironrdp::svc::MAX_STATIC_CHANNELS);
+        assert!(rdpsnd_channel_ptr(&connector).is_err());
+        assert!(!inner.config.enable_audio_playback);
+        Ok(())
+    }
+
     // oracle: mutant reject RDPDR attachment when it exactly fills static channel capacity
     #[test]
     fn rdpdr_attachment_succeeds_at_exact_static_channel_capacity() -> Result<(), &'static str> {
