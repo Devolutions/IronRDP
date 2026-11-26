@@ -1339,8 +1339,10 @@ impl DeviceAnnounceHeader {
 
     /// Returns the name a drive announce carries in DeviceData for a drive named `name`.
     ///
-    /// Replaces with `_` each character [MS-RDPEFS] 2.2.1.3, "Device Announce Header (DEVICE_ANNOUNCE)", forbids in a
-    /// device name (`<`, `>`, `"`, `/`, `\` and `|`), a colon anywhere but at the end, and NUL.
+    /// [MS-RDPEFS] 2.2.1.3, "Device Announce Header (DEVICE_ANNOUNCE)", lists `<`, `>`, `"`, `/`, `\` and `|` as invalid
+    /// in PreferredDosName, and a colon anywhere but at the end.
+    /// It sets no such rule for DeviceData, but Windows refuses a drive whose DeviceData name holds one of them.
+    /// Like FreeRDP, this function replaces each of them with `_`, and NUL too, since it would end the name early.
     /// Every other character is kept.
     /// The announce writes the result as its UTF-8 bytes followed by a NUL terminator.
     ///
@@ -1348,8 +1350,6 @@ impl DeviceAnnounceHeader {
     pub fn announced_drive_name(name: &str) -> String {
         name.char_indices()
             .map(|(i, c)| match c {
-                // Windows refuses an 8-bit name with a character MS-RDPEFS 2.2.1.3 forbids in a device name, or a
-                // colon before its end; FreeRDP replaces them too. A NUL would end the name early.
                 '<' | '>' | '"' | '/' | '\\' | '|' | '\0' => '_',
                 ':' if i + 1 != name.len() => '_',
                 _ => c,

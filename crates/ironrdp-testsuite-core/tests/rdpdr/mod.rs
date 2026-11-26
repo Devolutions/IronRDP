@@ -516,10 +516,9 @@ fn filesystem_drive_announce_replaces_characters_a_device_name_may_not_contain()
 
 #[test]
 fn announced_drive_name_replaces_characters_a_device_name_may_not_contain() {
-    // oracle: spec MS-RDPEFS §2.2.1.3 - <, >, ", /, \ and | are invalid in a device name, and so is a colon before
-    // its end.
     // oracle: reference FreeRDP/FreeRDP@dae0390a42ab271fa07a35979dfcd5671f83a949:channels/drive/client/drive_main.c -
-    // drive_register_drive_path writes '_' for each of them in DeviceData.
+    // drive_register_drive_path writes '_' in DeviceData for <, >, ", /, \, | and :, the characters MS-RDPEFS §2.2.1.3
+    // lists as invalid in PreferredDosName; the spec sets no rule for DeviceData.
     assert_eq!(
         DeviceAnnounceHeader::announced_drive_name(r#"a<b>c"d/e\f|g:h"#),
         "a_b_c_d_e_f_g_h"
