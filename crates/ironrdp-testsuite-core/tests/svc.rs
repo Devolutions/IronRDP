@@ -18,7 +18,7 @@ use rstest::rstest;
 const UNFRAGMENTED_MISMATCH: &str = "unfragmented channel data does not match its declared length";
 const EXCEEDS_DECLARED: &str = "channel fragment sequence exceeds its declared length";
 const TERMINAL_MISMATCH: &str = "terminal channel fragment does not match its declared length";
-const EXCEEDS_MAX_SIZE: &str = "static channel message exceeds configured maximum size";
+pub(crate) const EXCEEDS_MAX_SIZE: &str = "static channel message exceeds configured maximum size";
 
 #[derive(Debug)]
 struct RuntimeChannel {
@@ -186,7 +186,7 @@ fn expect_delivered(
     );
 }
 
-fn expect_invalid_length(
+pub(crate) fn expect_invalid_length(
     channel: &mut StaticVirtualChannel,
     data: &[u8],
     length: u32,

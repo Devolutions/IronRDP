@@ -1835,13 +1835,14 @@ async fn the_server_refuses_a_static_channel_message_over_its_limit() {
             );
             assert!(session_ended, "the session went on");
             poll_until(|| ended_with.lock().unwrap().is_some()).await;
-            let error = ended_with
+            let Disconnection { length_error, error } = ended_with
                 .lock()
                 .unwrap()
                 .clone()
                 .expect("the server reported how the connection ended");
-            assert!(
-                error.contains("exceeds configured maximum size"),
+            assert_eq!(
+                length_error,
+                Some("static channel message exceeds configured maximum size"),
                 "the session ended for another reason: {error}"
             );
 
@@ -1851,8 +1852,17 @@ async fn the_server_refuses_a_static_channel_message_over_its_limit() {
     .await;
 }
 
-/// Records how the server's last connection ended: the error's debug form, or empty without one.
-struct RecordDisconnection(Arc<StdMutex<Option<String>>>);
+/// How the server's last connection ended.
+#[derive(Clone)]
+struct Disconnection {
+    /// The reason of the first invalid `length` field in the error's source chain.
+    length_error: Option<&'static str>,
+    /// The error's debug form, or empty without one.
+    error: String,
+}
+
+/// Records how the server's last connection ended.
+struct RecordDisconnection(Arc<StdMutex<Option<Disconnection>>>);
 
 impl server::ConnectionHandler for RecordDisconnection {
     fn on_disconnected(
@@ -1861,7 +1871,24 @@ impl server::ConnectionHandler for RecordDisconnection {
         _duration: Duration,
         error: Option<&server::ServerError>,
     ) -> server::PostConnectionAction {
-        *self.0.lock().unwrap() = Some(error.map(|error| format!("{error:?}")).unwrap_or_default());
+        let chain = core::iter::successors(error.map(|error| -> &dyn core::error::Error { error }), |&error| {
+            error.source()
+        });
+        let length_error =
+            chain.into_iter().find_map(
+                |error| match error.downcast_ref::<ironrdp_core::DecodeError>()?.kind() {
+                    ironrdp_core::DecodeErrorKind::InvalidField {
+                        field: "length",
+                        reason,
+                        ..
+                    } => Some(*reason),
+                    _ => None,
+                },
+            );
+        *self.0.lock().unwrap() = Some(Disconnection {
+            length_error,
+            error: error.map(|error| format!("{error:?}")).unwrap_or_default(),
+        });
         server::PostConnectionAction::Continue
     }
 }

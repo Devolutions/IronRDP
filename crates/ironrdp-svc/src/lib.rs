@@ -148,12 +148,12 @@ pub struct StaticVirtualChannel {
 
 impl StaticVirtualChannel {
     pub fn new<T: SvcProcessor + 'static>(channel_processor: T) -> Self {
-        let mut chunk_processor = ChunkProcessor::new();
-        chunk_processor.max_message_size = channel_processor.max_message_size();
-        Self {
+        let mut channel = Self {
             channel_processor: Box::new(channel_processor),
-            chunk_processor,
-        }
+            chunk_processor: ChunkProcessor::new(),
+        };
+        channel.apply_set_max_message_size(None);
+        channel
     }
 
     pub fn channel_name(&self) -> ChannelName {
