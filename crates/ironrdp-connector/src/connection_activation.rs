@@ -601,7 +601,11 @@ fn create_client_confirm_active(
     server_capability_sets.extend_from_slice(&[
         CapabilitySet::General(General {
             major_platform_type: config.platform,
-            extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
+            // Windows Server 2012 sends no graphics at all to a client that leaves LONG_CREDENTIALS_SUPPORTED
+            // unset, although the logon completes. The session decodes the long logon notification it selects.
+            extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED
+                | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR
+                | GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED,
             ..Default::default()
         }),
         CapabilitySet::Bitmap(Bitmap {
