@@ -235,8 +235,8 @@ pub mod ffi {
         /// Preserves the drives selected in `ConfigBuilder`.
         /// Drive IDs start at one, so the smartcard device ID must not match a selected drive.
         /// Call before connecting.
-        /// A silent RDPSND channel is installed because Windows servers do not communicate on RDPDR without it
-        /// ([MS-RDPEFS] 2.1, "Transport", Appendix A, note 1).
+        /// When RDPSND is absent, a silent channel is installed because Windows servers do not communicate on RDPDR
+        /// without it ([MS-RDPEFS] 2.1, "Transport", Appendix A, note 1).
         ///
         /// Some WinSCard calls complete asynchronously: call `ActiveStage::poll_rdpdr_deferred`
         /// periodically to send their results to the server.
