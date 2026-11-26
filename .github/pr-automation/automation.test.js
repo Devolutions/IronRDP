@@ -1020,7 +1020,7 @@ async function runReviewGateScript({
   };
 }
 
-async function runResolveReviewScript({ report, pipelineResult = "success" }) {
+async function runResolveReviewScript({ report, pipelineResult = "success", admissionResult = "success" }) {
   const outputs = new Map();
   const summary = [];
   const rawReview = {
@@ -1082,6 +1082,7 @@ async function runResolveReviewScript({ report, pipelineResult = "success" }) {
     }),
     REVIEW_GATE_RESULT: "success", FORK_RATE_LIMIT: JSON.stringify({ status: "allowed" }),
     FORK_RATE_LIMIT_RESULT: "success", REVIEWER_REASON: "", REVIEW_PIPELINE_RESULT: pipelineResult,
+    REVIEW_ADMISSION_RESULT: admissionResult,
     FORCE: "false", LABELS: JSON.stringify(["risk/low"]), REVIEW_MARKER_ID: "123",
     SUMMARY_URL: "https://github.example/actions/runs/123",
   } };
@@ -1174,7 +1175,8 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewState,
     /SUMMARY_URL: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/);
   assert.match(reviewState, /addHeading\("Automated review skipped"\)/);
-  assert.match(reviewState, /reviewAttempted: \["success", "failure"\]\.includes/);
+  assert.match(reviewState,
+    /reviewAttempted: admissionFailed \|\|\s+\["success", "failure"\]\.includes/);
   assert.match(workflow, /types: \[requested, in_progress, completed\]/);
   assert.match(workflow, /converted_to_draft, closed/);
   assert.match(workflow, /reconcileLifecycle/);
@@ -6818,6 +6820,20 @@ test("admission jobs own provider routing and recheck prevents a general call af
     /classification-gate\.outputs\.available != 'true'/);
   assert.match(workflowJob(workflow, "resolve-review-state"),
     /review-gate\.outputs\.eligible != 'true'/);
+  assert.match(workflowJob(workflow, "resolve-review-state"),
+    /review-admission\.result == 'failure'/);
+});
+
+test("a failed review admission reports automation-failed with an unavailable review check", async () => {
+  const { state } = await runResolveReviewScript({
+    report: { v: REPORT_VERSION, status: "failed", stages: [] },
+    pipelineResult: "skipped", admissionResult: "failure",
+  });
+  assert.equal(state.failed, true);
+  assert.equal(state.reason, "review admission failed");
+  assert.ok(state.labelSets.some((set) => set.desired.includes("automation-failed")));
+  assert.equal(state.check.title, "Automated review unavailable");
+  assert.equal(state.check.conclusion, "neutral");
 });
 
 test("PR #1981 keeps a same-head success when automatic or forced failure arrives", async () => {

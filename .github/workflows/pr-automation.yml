@@ -862,6 +862,7 @@ jobs:
       needs.resolve-pr.outputs.review-route == 'true' &&
       (needs.resolve-pr.outputs.force == 'true' ||
       needs.review-admission.outputs.owner == 'true' ||
+      needs.review-admission.result == 'failure' ||
       needs.review-gate.outputs.eligible != 'true')
     runs-on: ubuntu-latest
     permissions:
@@ -892,6 +893,7 @@ jobs:
           FORK_RATE_LIMIT_RESULT: ${{ needs.fork-rate-limit.result }}
           REVIEWER_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
           REVIEW_PIPELINE_RESULT: ${{ needs.review-pipeline.result }}
+          REVIEW_ADMISSION_RESULT: ${{ needs.review-admission.result }}
           SUPERSEDED: ${{ needs.review-pipeline.outputs.superseded }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
@@ -945,11 +947,15 @@ jobs:
                : [];
              const failureReasons = report.stages.filter((stage) => stage.status === "failed")
                .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
-             const reviewerReason = !artifactsAgree
-               ? "review artifacts disagree"
-               : report.status === "failed"
-                 ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
-                 : process.env.REVIEWER_REASON;
+             // A failed admission supersedes its claim and has no owner left to report the failure.
+             const admissionFailed = !force && process.env.REVIEW_ADMISSION_RESULT === "failure";
+             const reviewerReason = admissionFailed
+               ? "review admission failed"
+               : !artifactsAgree
+                 ? "review artifacts disagree"
+                 : report.status === "failed"
+                   ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
+                   : process.env.REVIEWER_REASON;
              const revalidated = artifactsAgree && report.status === "success" && persisted
                ? validateFinalReview(persisted.raw_output, {
                  expectedSha: process.env.HEAD_SHA,
@@ -982,7 +988,8 @@ jobs:
                reviewerValidationContext: validationContext,
                specialistAggregate,
                requireReviewerContext: true,
-               reviewAttempted: ["success", "failure"].includes(process.env.REVIEW_PIPELINE_RESULT),
+               reviewAttempted: admissionFailed ||
+                 ["success", "failure"].includes(process.env.REVIEW_PIPELINE_RESULT),
              });
              if (!force && !state.superseded) state.lease = lease;
              core.info(JSON.stringify({
