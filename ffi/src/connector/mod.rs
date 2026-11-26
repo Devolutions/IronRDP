@@ -671,6 +671,8 @@ pub mod ffi {
 
 #[cfg(all(test, not(target_os = "android")))]
 mod tests {
+    use ironrdp::connector::AudioPlaybackMode as PlaybackRequest;
+
     use super::ffi::ClientConnector;
     use crate::audio::ffi::NativeAudio;
     use crate::connector::config::ffi::{AudioPlaybackMode, ConfigBuilder, PerformanceFlags};
@@ -678,8 +680,6 @@ mod tests {
     use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessageQueue;
     use crate::dvc::ffi::{DvcPipeProxyConfig, DvcPipeProxyDescriptor};
     use crate::pdu::ffi::WriteBuf;
-    use ironrdp::connector::AudioPlaybackMode as PlaybackRequest;
-
 
     fn capture_audio() -> Result<Box<NativeAudio>, &'static str> {
         NativeAudio::new(false, true, "", "", 0).map_err(|_| "audio settings")
