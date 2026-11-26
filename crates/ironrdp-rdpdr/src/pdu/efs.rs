@@ -1337,25 +1337,32 @@ impl DeviceAnnounceHeader {
         }
     }
 
+    /// Returns the name a drive announce carries in DeviceData for a drive named `name`.
+    ///
+    /// Replaces with `_` each character [MS-RDPEFS] 2.2.1.3, "Device Announce Header (DEVICE_ANNOUNCE)", forbids in a
+    /// device name (`<`, `>`, `"`, `/`, `\` and `|`), a colon anywhere but at the end, and NUL.
+    /// Every other character is kept.
+    /// The announce writes the result as its UTF-8 bytes followed by a NUL terminator.
+    ///
+    /// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
+    pub fn announced_drive_name(name: &str) -> String {
+        name.char_indices()
+            .map(|(i, c)| match c {
+                // Windows refuses an 8-bit name with a character MS-RDPEFS 2.2.1.3 forbids in a device name, or a
+                // colon before its end; FreeRDP replaces them too. A NUL would end the name early.
+                '<' | '>' | '"' | '/' | '\\' | '|' | '\0' => '_',
+                ':' if i + 1 != name.len() => '_',
+                _ => c,
+            })
+            .collect()
+    }
+
     fn new_drive(device_id: u32, name: String) -> Self {
         // MS-RDPEFS 2.2.3.1 asks for the name in DeviceData as a Unicode string with DRIVE_CAPABILITY_VERSION_02,
         // which this client advertises, but Windows 11 and Windows Server 2022 and 2025 read the field as 8-bit
         // characters: a UTF-16 name shows as its first letter. FreeRDP's client writes the name as 8-bit characters too:
         // the bytes of its UTF-8 name, which Windows Server 2025 shows with the characters outside ASCII intact.
-        // INVARIANT: every byte of a UTF-8 character outside ASCII is 0x80 or above, so a byte that matches an ASCII
-        // character below is that whole character; the bytes of other characters pass through unchanged, and the
-        // name stays null-terminated and gains no character MS-RDPEFS 2.2.1.3 forbids.
-        let mut device_data: Vec<u8> = name
-            .bytes()
-            .enumerate()
-            .map(|(i, b)| match b {
-                // Windows refuses an 8-bit name with a character MS-RDPEFS 2.2.1.3 forbids in a device name, or a
-                // colon before its end; FreeRDP replaces them too. A NUL would end the name early.
-                b'<' | b'>' | b'"' | b'/' | b'\\' | b'|' | 0 => b'_',
-                b':' if i + 1 != name.len() => b'_',
-                _ => b,
-            })
-            .collect();
+        let mut device_data = Self::announced_drive_name(&name).into_bytes();
         device_data.push(0 /* NUL terminator */);
 
         Self {

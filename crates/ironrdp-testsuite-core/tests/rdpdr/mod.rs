@@ -515,6 +515,21 @@ fn filesystem_drive_announce_replaces_characters_a_device_name_may_not_contain()
 }
 
 #[test]
+fn announced_drive_name_replaces_characters_a_device_name_may_not_contain() {
+    // oracle: spec MS-RDPEFS §2.2.1.3 - <, >, ", /, \ and | are invalid in a device name, and so is a colon before
+    // its end.
+    // oracle: reference FreeRDP/FreeRDP@dae0390a42ab271fa07a35979dfcd5671f83a949:channels/drive/client/drive_main.c -
+    // drive_register_drive_path writes '_' for each of them in DeviceData.
+    assert_eq!(
+        DeviceAnnounceHeader::announced_drive_name(r#"a<b>c"d/e\f|g:h"#),
+        "a_b_c_d_e_f_g_h"
+    );
+    // oracle: mutant a NUL kept, which ends DeviceData early, or the trailing colon replaced with '_', which Windows
+    // shows as `\\tsclient\b_` rather than `\\tsclient\b`.
+    assert_eq!(DeviceAnnounceHeader::announced_drive_name("a\0b:"), "a_b:");
+}
+
+#[test]
 fn filesystem_drive_announce_keeps_a_trailing_colon() {
     // oracle: mutant the trailing colon replaced with '_', which Windows shows as `\\tsclient\C_` rather than
     // `\\tsclient\C`.

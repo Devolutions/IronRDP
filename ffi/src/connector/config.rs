@@ -25,13 +25,8 @@ pub(crate) struct RedirectedDriveConfig {
 ///
 /// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
 fn drive_wire_name(name: &str) -> String {
-    // The device ID is only used to retrieve the single entry in this temporary collection.
-    let mut devices = ironrdp::rdpdr::pdu::efs::Devices::new();
-    devices.add_drive(0, name.to_owned());
-    let data = devices.device(0).expect("the drive was just added").device_data();
-    let data = data.strip_suffix(&[0]).unwrap_or(data);
-    let data = data.strip_suffix(b":").unwrap_or(data);
-    String::from_utf8_lossy(data).to_uppercase()
+    let announced = ironrdp::rdpdr::pdu::efs::DeviceAnnounceHeader::announced_drive_name(name);
+    announced.strip_suffix(':').unwrap_or(&announced).to_uppercase()
 }
 
 /// The bitmap settings used when the caller sets none, matching the native client.
@@ -521,7 +516,7 @@ mod tests {
     }
 
     // oracle: mutant sanitize two distinct names to different wire names
-    // The colliding pairs follow the drive DeviceData encoding in ironrdp-rdpdr (`DeviceAnnounceHeader::new_drive`)
+    // The colliding pairs follow the drive name ironrdp-rdpdr announces (`DeviceAnnounceHeader::announced_drive_name`)
     // followed by Unicode uppercase conversion; no specification defines this mapping.
     #[test]
     fn drive_names_collide_after_wire_sanitization_and_case_folding() {
