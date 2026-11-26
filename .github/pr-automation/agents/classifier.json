@@ -17,5 +17,6 @@
   "max_tool_calls": 64,
   "stream_idle_timeout_ms": 300000,
   "stage_timeout_ms": 1800000,
-  "max_request_retries": 4
+  "max_request_retries": 4,
+  "max_output_repair_attempts": 2
 }

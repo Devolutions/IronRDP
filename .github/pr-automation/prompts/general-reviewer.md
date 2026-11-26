@@ -6,6 +6,7 @@ Read `pr-evidence/changed-files.txt`, `pr-evidence/pull-request.diff`, `pr-evide
 Inspect `pr-head` for surrounding code and assess the change independently, without assuming specialist conclusions are correct.
 
 Return only final-review JSON for the aggregate head SHA.
+Text fields have hard character limits, and longer text is rejected: `summary` 1000, `candidate_dispositions[].rationale` 800, `findings[].title` 200, and `findings[].rationale` 1200; stay well under each.
 Each finding in a specialist whose `status` is `valid` is a candidate requiring exactly one `candidate_dispositions` entry.
 Copy `reviewer` from the specialist's `reviewer` field and `finding_id` from the finding's `id`; the candidate index at the end of this prompt lists every pair to copy.
 Failed specialists and empty `findings` arrays require no entries.

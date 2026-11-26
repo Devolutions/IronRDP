@@ -85,7 +85,8 @@ Every logical model call can make up to four retry HTTP attempts after its initi
 
 `.github/pr-automation/output-normalizer.js` is the trusted stage-specific canonicalizer.
 It projects unknown properties only at strict schema-object boundaries and normalizes only product-declared non-authoritative summary tails before local schema validation.
-The classifier uses its normalizer without a semantic validator.
+The classifier uses its normalizer without a semantic validator, and repairs schema-invalid output inside the same conversation at most twice.
+Every stage prompt states the character limit of each free-text field its schema bounds, because a model writes prose against the prompt and an over-long strict field fails the stage once repairs run out.
 Specialist and general stages normalize first, validate the local JSON Schema, then call `.github/pr-automation/agent-validator.js` with bounded metadata naming the stage, reviewer, expected SHA, and trusted context files.
 The validator reads the changed-file manifest, the protocol corpus, and the specialist aggregate itself, from paths only the trusted workflow can write.
 

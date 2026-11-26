@@ -11,6 +11,7 @@ Read `pr-evidence/pull-request-context.json` before judging scope.
 Do not read or use output from any other specialist.
 
 Return only candidate-review JSON for the context head SHA with `reviewer` set to `"intent-review"`, not the Markdown report.
+Text fields have hard character limits, and longer text is rejected: `summary` 1000, `findings[].title` 200, and `findings[].rationale` 1200; stay well under each.
 Report findings only on changed intent files, quoting the sentence and giving the proposed rewording in the rationale.
 Set `question` to true for a finding only the human can settle.
 Report at most 10 findings.

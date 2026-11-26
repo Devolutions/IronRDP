@@ -10,6 +10,7 @@ The Microsoft Open Specifications corpus is provider-neutral reference data unde
 Use its `README.md` for discovery and `<PROTOCOL-ID>/<PROTOCOL-ID>.md` for requirements.
 
 Return only JSON matching the supplied candidate-review schema for the context head SHA.
+Text fields have hard character limits, and longer text is rejected: `summary` 1000, `findings[].title` 200, `findings[].rationale` 1200, and `findings[].references[].heading` 200; stay well under each.
 Report only concrete protocol defects.
 Always provide a concise, nonempty review summary.
 Use unique stable IDs in the form `protocol-N`.
