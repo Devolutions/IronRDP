@@ -9,6 +9,7 @@ Read `pr-evidence/pull-request-context.json` before judging necessity or scope.
 Do not read or use output from any other specialist.
 
 Return only candidate-review JSON for the context head SHA with `reviewer` set to `"skeptical"`.
+Text fields have hard character limits, and longer text is rejected: `summary` 1000, `findings[].title` 200, and `findings[].rationale` 1200; stay well under each.
 Use unique stable kebab-case finding IDs and report only changed paths.
 Use line ranges only when every line is added by the diff; otherwise use null for both lines.
 Set every `references` array to empty.

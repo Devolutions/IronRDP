@@ -11,6 +11,7 @@ Read `pr-evidence/pull-request-context.json` before judging what the change clai
 Do not read or use output from any other specialist.
 
 Return only candidate-review JSON for the context head SHA with `reviewer` set to `"intent-drift"`, not the audit table.
+Text fields have hard character limits, and longer text is rejected: `summary` 1000, `findings[].title` 200, and `findings[].rationale` 1200; stay well under each.
 Report introduced violations, introduced partials, and intent rot in changed intent files as findings, naming the statement ID in the title or rationale.
 Report a statement you cannot verify as a finding with `question` set to true; omit statements that conform and violations the diff did not introduce.
 Report at most 10 findings.
