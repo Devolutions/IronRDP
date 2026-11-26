@@ -330,6 +330,23 @@ impl FormatList<'_> {
     }
 
     pub fn get_formats(&self, use_long_format: bool) -> PduResult<Vec<ClipboardFormat>> {
+        self.decode_formats(use_long_format, usize::MAX, usize::MAX)
+    }
+
+    /// Takes a prefix of a remote offer, stopping before the first entry that exceeds either receive limit.
+    pub(crate) fn received_formats(&self, use_long_format: bool) -> PduResult<Vec<ClipboardFormat>> {
+        const MAX_FORMAT_COUNT: usize = 1024;
+        // UTF-16 code units or ANSI bytes, excluding the terminator.
+        const MAX_NAME_UNITS: usize = 1024;
+        self.decode_formats(use_long_format, MAX_FORMAT_COUNT, MAX_NAME_UNITS)
+    }
+
+    fn decode_formats(
+        &self,
+        use_long_format: bool,
+        max_formats: usize,
+        max_name_units: usize,
+    ) -> PduResult<Vec<ClipboardFormat>> {
         let mut src = ReadCursor::new(self.encoded_formats.as_ref());
         let charset = if self.use_ascii {
             CharacterSet::Ansi
@@ -343,8 +360,20 @@ impl FormatList<'_> {
 
             let mut formats = Vec::with_capacity(16);
 
-            while src.len() >= MINIMAL_FORMAT_SIZE {
+            let unit_size = if self.use_ascii { 1 } else { 2 };
+            while formats.len() < max_formats && MINIMAL_FORMAT_SIZE <= src.len() {
                 let id = src.read_u32();
+                // A name can run to the end of the PDU without a terminator.
+                // If more units remain, look for the terminator only within the accepted prefix.
+                if max_name_units < src.len() / unit_size
+                    && !src
+                        .remaining()
+                        .chunks_exact(unit_size)
+                        .take(max_name_units + 1)
+                        .any(|unit| unit.iter().all(|&byte| byte == 0))
+                {
+                    break;
+                }
                 let name = read_string_from_cursor(&mut src, charset, true).map_err(|e| decode_err!(e))?;
 
                 let format = ClipboardFormat::new(ClipboardFormatId::new(id)).with_name(ClipboardFormatName::new(name));
@@ -354,7 +383,7 @@ impl FormatList<'_> {
 
             Ok(formats)
         } else {
-            let items_count = src.len() / Self::SHORT_FORMAT_SIZE;
+            let items_count = max_formats.min(src.len() / Self::SHORT_FORMAT_SIZE);
 
             let mut formats = Vec::with_capacity(items_count);
 

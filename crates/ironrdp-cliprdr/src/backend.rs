@@ -124,6 +124,9 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     ///
     /// Clipboard endpoint implementation should keep track of available formats prior
     /// to requesting data from the server.
+    ///
+    /// The channel delivers at most the first 1024 entries of a remote offer.
+    /// It stops before the first name longer than 1024 UTF-16 code units or ANSI bytes, excluding the terminator.
     fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]);
 
     /// Processes remote's request to send format data.
