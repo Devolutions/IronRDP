@@ -7294,7 +7294,9 @@ test("every stage prompt states the character limit of each free-text schema fie
       .filter(([field]) => !(unusedReferences && field.includes(".references[]")));
     assert.notEqual(limits.length, 0, agent);
     for (const [field, limit] of limits) {
-      assert.equal(prompt.includes(`\`${field}\` ${limit}`), true, `${agent} must state ${field} ${limit}`);
+      // The whole number must match, so `summary` 1000 in a prompt does not satisfy a limit of 100.
+      const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      assert.match(prompt, new RegExp(`\`${escaped}\` ${limit}(?![0-9])`), `${agent} must state ${field} ${limit}`);
     }
   }
 });
