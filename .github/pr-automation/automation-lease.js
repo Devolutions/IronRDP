@@ -114,23 +114,34 @@ async function claimAutomaticLease({
   const lease = { kind, headSha, runId, attempt, checkRunId: claim.id, marker };
   // Complete only our new claim so a later admission may proceed without inheriting an
   // active-looking lease.
-  const supersede = async (reason) => {
+  const supersede = async () => {
     await github.rest.checks.update({
       owner, repo, check_run_id: claim.id, status: "completed", conclusion: "neutral",
       output: { title: "Automation superseded", summary: marker },
     });
-    return { owner: false, available: true, reason };
   };
-  // The review recheck reads lease ownership from the listing, so judging it before the listing
-  // shows the claim would supersede an unchanged pull request.
-  if (kind === "review" && prNumber !== undefined && !await awaitListedClaim({
-    github, owner, repo, kind, headSha, checkRunId: claim.id,
-    retries: listingRetries, delayMs: listingDelayMs, sleep,
-  })) {
-    return await supersede("lease claim is not listed");
+  let reason;
+  try {
+    // The review recheck reads lease ownership from the listing, so judging it before the listing
+    // shows the claim would supersede an unchanged pull request.
+    if (kind === "review" && prNumber !== undefined && !await awaitListedClaim({
+      github, owner, repo, kind, headSha, checkRunId: claim.id,
+      retries: listingRetries, delayMs: listingDelayMs, sleep,
+    })) {
+      reason = "lease claim is not listed";
+    } else if (!await eligible(lease)) {
+      // An eligibility change during `create` makes this claim unusable.
+      reason = "pull request changed during lease claim";
+    }
+  } catch (error) {
+    // A failed recheck leaves no owner, so the claim must not stay in progress.
+    await supersede().catch(() => {});
+    throw error;
   }
-  // An eligibility change during `create` makes this claim unusable.
-  if (!await eligible(lease)) return await supersede("pull request changed during lease claim");
+  if (reason) {
+    await supersede();
+    return { owner: false, available: true, reason };
+  }
   return {
     owner: true, available: true,
     lease,

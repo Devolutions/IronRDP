@@ -6523,7 +6523,7 @@ test("automatic admission neutralizes a claim when post-validation observes a dr
 });
 
 // The check-run listing can trail `checks.create` by seconds while the pull request is unchanged.
-const claimReviewWithListingLag = async ({ hiddenListings, listingRetries }) => {
+const claimReviewWithListingLag = async ({ hiddenListings, listingRetries, listingError }) => {
   const runs = [];
   const updates = [];
   const sleeps = [];
@@ -6543,6 +6543,8 @@ const claimReviewWithListingLag = async ({ hiddenListings, listingRetries }) => 
           id: 9, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
           conclusion: "success", app: { slug: "github-actions" },
         }] };
+      } else if (runs.length > 0 && listingError) {
+        throw listingError;
       } else if (runs.length > 0 && hidden > 0) {
         hidden -= 1;
         yield { data: [] };
@@ -6566,12 +6568,16 @@ const claimReviewWithListingLag = async ({ hiddenListings, listingRetries }) => 
       issues: { get: async () => ({ data: { labels: [{ name: "risk/low" }] } }) },
     },
   };
-  const decision = await claimAutomaticLease({
-    github, owner: "Devolutions", repo: "IronRDP", kind: "review", headSha: SHA,
-    prNumber: 1, gate, runId: 7, attempt: 1,
-    listingRetries, sleep: async (ms) => { sleeps.push(ms); },
-  });
-  return { decision, updates, sleeps };
+  try {
+    const decision = await claimAutomaticLease({
+      github, owner: "Devolutions", repo: "IronRDP", kind: "review", headSha: SHA,
+      prNumber: 1, gate, runId: 7, attempt: 1,
+      listingRetries, sleep: async (ms) => { sleeps.push(ms); },
+    });
+    return { decision, updates, sleeps };
+  } catch (error) {
+    return { error, updates, sleeps };
+  }
 };
 
 test("automatic review admission keeps a claim the check-run listing has not caught up to", async () => {
@@ -6594,6 +6600,16 @@ test("automatic review admission neutralizes a claim the listing never shows", a
   assert.deepEqual(updates.map(({ check_run_id, conclusion, output }) => ({
     check_run_id, conclusion, title: output.title,
   })), [{ check_run_id: 19, conclusion: "neutral", title: "Automation superseded" }]);
+});
+
+test("automatic review admission neutralizes its claim when the post-claim recheck fails", async () => {
+  const listingError = new Error("listing unavailable");
+  const { error, updates } = await claimReviewWithListingLag({
+    hiddenListings: 0, listingRetries: 3, listingError,
+  });
+  assert.equal(error, listingError);
+  assert.deepEqual(updates.map(({ check_run_id, conclusion }) => ({ check_run_id, conclusion })),
+    [{ check_run_id: 19, conclusion: "neutral" }]);
 });
 
 test("automatic leases rerun after terminal or missing owners and fail closed on malformed claims", async () => {
