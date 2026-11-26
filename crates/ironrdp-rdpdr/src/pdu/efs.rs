@@ -1346,6 +1346,9 @@ impl DeviceAnnounceHeader {
     /// Every other character is kept.
     /// The announce writes the result as its UTF-8 bytes followed by a NUL terminator.
     ///
+    /// INVARIANT: the result holds none of `<`, `>`, `"`, `/`, `\`, `|` and NUL,
+    /// and a colon only as its last character.
+    ///
     /// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
     pub fn announced_drive_name(name: &str) -> String {
         name.char_indices()
