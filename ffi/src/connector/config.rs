@@ -15,15 +15,22 @@ pub(crate) struct RedirectedDriveConfig {
 }
 
 #[cfg(any(windows, test))]
-/// Returns the drive name as announced in DeviceData, uppercased for duplicate detection.
+/// Returns the drive name as announced in DeviceData, without a trailing colon and uppercased, for duplicate detection.
 ///
-/// The uppercase fold is a deliberately conservative client-side policy:
-/// Windows resolves `\\tsclient\<name>` case-insensitively, and folding can only reject more names, never accept a colliding one.
+/// The uppercase fold and the dropped trailing colon are a deliberately conservative client-side policy:
+/// Windows resolves `\\tsclient\<name>` case-insensitively,
+/// [MS-RDPEFS] 2.2.1.3, "Device Announce Header (DEVICE_ANNOUNCE)", allows a colon only at the end of a device name
+/// without saying whether the server keeps it,
+/// and both can only reject more names, never accept a colliding one.
+///
+/// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
 fn drive_wire_name(name: &str) -> String {
     // The device ID is only used to retrieve the single entry in this temporary collection.
     let mut devices = ironrdp::rdpdr::pdu::efs::Devices::new();
     devices.add_drive(0, name.to_owned());
     let data = devices.device(0).expect("the drive was just added").device_data();
+    let data = data.strip_suffix(&[0]).unwrap_or(data);
+    let data = data.strip_suffix(b":").unwrap_or(data);
     String::from_utf8_lossy(data).to_uppercase()
 }
 
@@ -531,6 +538,15 @@ mod tests {
         assert_eq!(super::drive_wire_name("\u{c4}"), super::drive_wire_name("\u{e4}"));
         assert_eq!(super::drive_wire_name("\u{3a3}"), super::drive_wire_name("\u{3c2}"));
         assert_ne!(super::drive_wire_name("Projects"), super::drive_wire_name("Project"));
+    }
+
+    // oracle: spec MS-RDPEFS §2.2.1.3 allows a colon only at the end of a device name without saying the server keeps it,
+    // so the conservative collision check treats a trailing colon as absent.
+    #[test]
+    fn drive_names_differing_only_by_trailing_colon_collide() {
+        assert_eq!(super::drive_wire_name("C"), super::drive_wire_name("C:"));
+        assert_eq!(super::drive_wire_name("data"), super::drive_wire_name("DATA:"));
+        assert_ne!(super::drive_wire_name("C"), super::drive_wire_name("C:D"));
     }
 
     #[cfg(windows)]
