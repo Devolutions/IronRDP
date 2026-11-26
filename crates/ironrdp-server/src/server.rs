@@ -819,10 +819,11 @@ pub enum ConnectionPolicy {
     /// Candidates are additionally gated through
     /// [`ConnectionHandler::on_accept`] *before* they are allowed to
     /// negotiate, so an IP allowlist or rate limiter bounds who may even
-    /// attempt a takeover. It does NOT bound how long one admitted candidate
-    /// can occupy the (single) negotiation slot before another is even
-    /// considered -- see the limitation documented on
-    /// `CANDIDATE_NEGOTIATION_TIMEOUT`.
+    /// attempt a takeover. Up to eight admitted candidates negotiate at once,
+    /// each for at most `CANDIDATE_NEGOTIATION_TIMEOUT`, so a candidate that
+    /// stalls its handshake holds one of those slots, not the server; while all
+    /// are taken, newcomers wait in the listen backlog (see
+    /// `MAX_CONCURRENT_CANDIDATES`).
     Preempt,
 }
 
@@ -1957,8 +1958,8 @@ impl ServerEvent {
     }
 }
 
-/// The in-flight [`negotiate_candidate`] call for a candidate connection, or a
-/// never-resolving placeholder while none is being negotiated. Borrows the
+/// The in-flight [`negotiate_candidate`] call for one candidate connection,
+/// held in the race's pool of up to `MAX_CONCURRENT_CANDIDATES`. Borrows the
 /// [`NegotiationContext`] the race built.
 type PreemptProbe<'ctx, S> = core::pin::Pin<Box<dyn Future<Output = Option<AuthenticatedConnection<S>>> + 'ctx>>;
 
@@ -1975,8 +1976,10 @@ enum PreemptRace<S> {
 }
 
 /// The first probe in `probes` to finish, with its index. Pending while none
-/// has, and forever when the pool is empty (gate it on the pool being
-/// non-empty).
+/// has.
+///
+/// INVARIANT: pending forever on an empty pool; callers gate on it being
+/// non-empty.
 fn next_probe<'a, S>(
     probes: &'a mut [PreemptProbe<'_, S>],
 ) -> impl Future<Output = (usize, Option<AuthenticatedConnection<S>>)> + 'a {
@@ -5053,6 +5056,8 @@ impl RdpServer {
                         }
                         NextConnection::Authenticated(winner) => Box::pin(self.serve_negotiated(winner.connection)),
                     };
+                    // INVARIANT: a probe is removed from `probes` as soon as it
+                    // resolves, so a finished future is never polled again.
                     let mut probes: Vec<PreemptProbe<'_, C::Stream>> = Vec::new();
 
                     loop {
@@ -5084,6 +5089,7 @@ impl RdpServer {
                                     let first_winner = async {
                                         while !probes.is_empty() {
                                             let (index, candidate) = next_probe(&mut probes).await;
+                                            // Upholds the pool's INVARIANT.
                                             drop(probes.swap_remove(index));
                                             if candidate.is_some() {
                                                 return candidate;
@@ -5155,7 +5161,7 @@ impl RdpServer {
                                 warn!(%error, "accept failed while a session was live");
                             }
                             PreemptRace::Probed(index, candidate) => {
-                                // A finished future must not be polled again.
+                                // Upholds the pool's INVARIANT.
                                 drop(probes.swap_remove(index));
                                 // `negotiate_candidate` already logged the
                                 // reason when it declines, so there is nothing
@@ -8322,27 +8328,7 @@ mod preempt_tests {
         let local = task::LocalSet::new();
         local
             .run_until(async move {
-                let mut server = RdpServer::builder()
-                    .with_addr((Ipv4Addr::LOCALHOST, 0))
-                    .with_no_security()
-                    .with_no_input()
-                    .with_no_display()
-                    .with_connection_policy(ConnectionPolicy::Preempt)
-                    .build();
-
-                let event_sender = server.event_sender().clone();
-                let run_task = task::spawn_local(async move {
-                    let _ = Box::pin(server.run()).await;
-                });
-
-                let addr = loop {
-                    let (tx, rx) = oneshot::channel();
-                    let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
-                    if let Ok(Some(addr)) = rx.await {
-                        break addr;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                };
+                let (addr, event_sender, run_task) = spawn_preempt_server().await;
 
                 // Client A: the live session (connect, stay silent).
                 let client_a = TcpStream::connect(addr).await.unwrap();
@@ -8388,6 +8374,68 @@ mod preempt_tests {
             .await;
     }
 
+    /// A `Preempt` server with no security, running on a local task (call
+    /// inside a `LocalSet`): its address, its event sender and the task.
+    async fn spawn_preempt_server() -> (SocketAddr, mpsc::UnboundedSender<ServerEvent>, task::JoinHandle<()>) {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .with_connection_policy(ConnectionPolicy::Preempt)
+            .build();
+        let event_sender = server.event_sender().clone();
+        let run_task = task::spawn_local(async move {
+            let _ = Box::pin(server.run()).await;
+        });
+        let addr = loop {
+            let (tx, rx) = oneshot::channel();
+            let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
+            if let Ok(Some(addr)) = rx.await {
+                break addr;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        (addr, event_sender, run_task)
+    }
+
+    /// Sends an X.224 Connection Request for standard RDP security, the
+    /// protocol `RdpServerSecurity::None` accepts.
+    async fn send_connection_request(stream: &mut TcpStream) {
+        let cr = nego::ConnectionRequest {
+            nego_data: None,
+            flags: nego::RequestFlags::empty(),
+            protocol: nego::SecurityProtocol::empty(),
+            correlation_info: None,
+        };
+        stream.write_all(&encode_vec(&X224(cr)).unwrap()).await.unwrap();
+    }
+
+    /// Whether `stream` gets an X.224 Connection Confirm carrying an RDP
+    /// Negotiation Response within `wait`, and stays open after it.
+    async fn negotiated(stream: &mut TcpStream, wait: Duration) -> bool {
+        // oracle: spec MS-RDPBCGR §2.2.1.2 and §2.2.1.2.1: a Connection Confirm
+        // with a negotiation response is 19 bytes (TPKT 4, X.224 CC 7, RDP_NEG_RSP
+        // 8) and RDP_NEG_RSP's type byte is 0x02 (an RDP_NEG_FAILURE is 0x03).
+        let mut confirm = [0u8; 19];
+        match tokio::time::timeout(wait, stream.read_exact(&mut confirm)).await {
+            Ok(Ok(_)) => {}
+            _ => return false,
+        }
+        assert_eq!(
+            confirm[..4],
+            [0x03, 0x00, 0x00, 19],
+            "not a 19-byte TPKT frame: {confirm:02x?}"
+        );
+        assert_eq!(confirm[11], 0x02, "not an RDP_NEG_RSP: {confirm:02x?}");
+        // Negotiated, so the server keeps the connection and waits for the
+        // client's next PDU: nothing more arrives, and no EOF.
+        let mut more = [0u8; 1];
+        tokio::time::timeout(Duration::from_millis(200), stream.read(&mut more))
+            .await
+            .is_err()
+    }
+
     /// Under `Preempt`, a candidate that stalls its handshake must not stop
     /// another newcomer from being negotiated. With a single probe slot, every
     /// later connection waited in the listen backlog until the stalled one
@@ -8398,27 +8446,7 @@ mod preempt_tests {
         let local = task::LocalSet::new();
         local
             .run_until(async move {
-                let mut server = RdpServer::builder()
-                    .with_addr((Ipv4Addr::LOCALHOST, 0))
-                    .with_no_security()
-                    .with_no_input()
-                    .with_no_display()
-                    .with_connection_policy(ConnectionPolicy::Preempt)
-                    .build();
-
-                let event_sender = server.event_sender().clone();
-                let run_task = task::spawn_local(async move {
-                    let _ = Box::pin(server.run()).await;
-                });
-
-                let addr = loop {
-                    let (tx, rx) = oneshot::channel();
-                    let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
-                    if let Ok(Some(addr)) = rx.await {
-                        break addr;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                };
+                let (addr, event_sender, run_task) = spawn_preempt_server().await;
 
                 // A holds the connection being served, B a candidate slot;
                 // both connect and then say nothing.
@@ -8427,22 +8455,51 @@ mod preempt_tests {
                 let _client_b = TcpStream::connect(addr).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
-                // C sends a well-formed X.224 Connection Request (standard RDP
-                // security) and must get an answer while B is still stalled.
+                // C negotiates while B is still stalled.
                 let mut client_c = TcpStream::connect(addr).await.unwrap();
-                let connection_request = [
-                    0x03, 0x00, 0x00, 0x13, // TPKT, 19 bytes
-                    0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, // X.224 Connection Request
-                    0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // RDP_NEG_REQ, PROTOCOL_RDP
-                ];
-                client_c.write_all(&connection_request).await.unwrap();
-                let mut reply = [0u8; 4];
-                let answered = tokio::time::timeout(Duration::from_secs(3), client_c.read_exact(&mut reply)).await;
+                send_connection_request(&mut client_c).await;
                 assert!(
-                    matches!(answered, Ok(Ok(_))),
-                    "a newcomer was not negotiated while another candidate was stalled: {answered:?}"
+                    negotiated(&mut client_c, Duration::from_secs(3)).await,
+                    "a newcomer was not negotiated while another candidate was stalled"
                 );
-                assert_eq!(reply[0], 0x03, "the answer is not a TPKT frame");
+
+                let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
+                let _ = tokio::time::timeout(Duration::from_secs(3), run_task).await;
+            })
+            .await;
+    }
+
+    /// The pool is bounded: while `MAX_CONCURRENT_CANDIDATES` candidates are
+    /// negotiating, a newcomer waits in the listen backlog, and is negotiated
+    /// as soon as one of them ends.
+    #[tokio::test]
+    async fn a_full_pool_holds_newcomers_until_a_slot_frees() {
+        let local = task::LocalSet::new();
+        local
+            .run_until(async move {
+                let (addr, event_sender, run_task) = spawn_preempt_server().await;
+
+                let _client_a = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let mut stalled = Vec::new();
+                for _ in 0..MAX_CONCURRENT_CANDIDATES {
+                    stalled.push(TcpStream::connect(addr).await.unwrap());
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+
+                let mut newcomer = TcpStream::connect(addr).await.unwrap();
+                send_connection_request(&mut newcomer).await;
+                assert!(
+                    !negotiated(&mut newcomer, Duration::from_millis(500)).await,
+                    "a newcomer was negotiated with the pool full"
+                );
+
+                // One stalled candidate gives up; its slot takes the newcomer.
+                drop(stalled.pop());
+                assert!(
+                    negotiated(&mut newcomer, Duration::from_secs(3)).await,
+                    "the newcomer was not negotiated once a slot freed"
+                );
 
                 let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
                 let _ = tokio::time::timeout(Duration::from_secs(3), run_task).await;
@@ -8459,27 +8516,7 @@ mod preempt_tests {
         let local = task::LocalSet::new();
         local
             .run_until(async move {
-                let mut server = RdpServer::builder()
-                    .with_addr((Ipv4Addr::LOCALHOST, 0))
-                    .with_no_security()
-                    .with_no_input()
-                    .with_no_display()
-                    .with_connection_policy(ConnectionPolicy::Preempt)
-                    .build();
-
-                let event_sender = server.event_sender().clone();
-                let run_task = task::spawn_local(async move {
-                    let _ = Box::pin(server.run()).await;
-                });
-
-                let addr = loop {
-                    let (tx, rx) = oneshot::channel();
-                    let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
-                    if let Ok(Some(addr)) = rx.await {
-                        break addr;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                };
+                let (addr, event_sender, run_task) = spawn_preempt_server().await;
 
                 // A is served; B and C are candidates, all silent so far.
                 let client_a = TcpStream::connect(addr).await.unwrap();
@@ -8489,29 +8526,20 @@ mod preempt_tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // The session ends, then B gives up, then C negotiates, all
-                // within the handoff grace.
+                // well within the 750 ms handoff grace (the short sleeps only
+                // order the three events).
                 drop(client_a);
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(25)).await;
                 drop(client_b);
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let cr = nego::ConnectionRequest {
-                    nego_data: None,
-                    flags: nego::RequestFlags::empty(),
-                    // `RdpServerSecurity::None`'s flags: enough to win.
-                    protocol: nego::SecurityProtocol::empty(),
-                    correlation_info: None,
-                };
-                client_c.write_all(&encode_vec(&X224(cr)).unwrap()).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                send_connection_request(&mut client_c).await;
 
                 // C gets its Connection Confirm and stays connected; had its
                 // probe been dropped, the read would end at EOF instead.
-                let mut reply = [0u8; 4];
-                let answered = tokio::time::timeout(Duration::from_secs(3), client_c.read_exact(&mut reply)).await;
                 assert!(
-                    matches!(answered, Ok(Ok(_))),
-                    "the candidate that authenticated was dropped at the handoff: {answered:?}"
+                    negotiated(&mut client_c, Duration::from_secs(3)).await,
+                    "the candidate that authenticated was dropped at the handoff"
                 );
-                assert_eq!(reply[0], 0x03, "the answer is not a TPKT frame");
 
                 let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
                 let _ = tokio::time::timeout(Duration::from_secs(3), run_task).await;
