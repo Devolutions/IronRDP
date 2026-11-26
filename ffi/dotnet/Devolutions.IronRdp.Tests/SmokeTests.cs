@@ -30,7 +30,7 @@ internal static class SmokeTests
         if (OperatingSystem.IsWindows())
         {
             // oracle: mutant discard all drives configured before connector creation
-            yield return ("Windows config accepts multiple independently selected drives", () =>
+            yield return ("Windows config with redirected drives advertises rdpdr and rdpsnd", () =>
             {
                 var builder = TlsConfigBuilder();
                 AddWindowsDrives(builder);
@@ -119,7 +119,7 @@ internal static class SmokeTests
             });
         }
 
-        // oracle: MS-RDPEFS Appendix A note 1 requires RDPSND for Windows servers to communicate on RDPDR
+        // oracle: spec MS-RDPEFS §Appendix_A_1
         yield return ("smartcard RDPDR advertises RDPSND without native playback", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");

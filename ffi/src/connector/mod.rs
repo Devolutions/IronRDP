@@ -14,9 +14,7 @@ pub(crate) struct RdpdrConfiguration {
 
 fn attach_rdpdr_compatibility_rdpsnd(connector: &mut ironrdp::connector::ClientConnector, audio_playback_forced: bool) {
     let playback_dvc = connector
-        .static_channels
-        .get_by_type::<ironrdp::dvc::DrdynvcClient>()
-        .and_then(|channel| channel.channel_processor_downcast_ref::<ironrdp::dvc::DrdynvcClient>())
+        .get_static_channel_processor::<ironrdp::dvc::DrdynvcClient>()
         .is_some_and(|drdynvc| crate::audio::has_audio_channel(drdynvc, crate::audio::AudioChannelKind::Playback));
     connector.config.enable_audio_playback = audio_playback_forced || playback_dvc;
     connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(
@@ -91,7 +89,7 @@ pub mod ffi {
                         )
                     })?;
 
-                if smart_card_device_id.is_some_and(|id| drives.iter().any(|drive| drive.device_id() == id)) {
+                if smart_card_device_id.is_some_and(|id| self.2.drives.iter().any(|drive| drive.device_id == id)) {
                     return Err("smartcard device ID conflicts with a redirected drive".into());
                 }
 
@@ -746,16 +744,44 @@ mod tests {
         Ok(())
     }
 
+    fn rdpsnd_channel_ptr(connector: &ClientConnector) -> Result<*const ironrdp::rdpsnd::client::Rdpsnd, &'static str> {
+        connector
+            .0
+            .as_ref()
+            .and_then(|connector| {
+                connector
+                    .static_channels
+                    .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
+            })
+            .and_then(|channel| channel.channel_processor_downcast_ref::<ironrdp::rdpsnd::client::Rdpsnd>())
+            .map(core::ptr::from_ref)
+            .ok_or("RDPSND channel")
+    }
+
+    /// Checks that playback is advertised through an RDPSND channel other than the silent compatibility one.
+    fn assert_rdpsnd_playback(connector: &ClientConnector) -> Result<(), &'static str> {
+        rdpsnd_channel_ptr(connector)?;
+        assert!(!connector.2.compatibility_rdpsnd);
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    fn assert_native_playback(connector: &ClientConnector) -> Result<(), &'static str> {
+        assert!(connector.1.as_ref().is_some_and(|audio| audio.has_playback()));
+        assert_rdpsnd_playback(connector)
+    }
+
     // oracle: mutant drop static playback when smartcard RDPDR is attached afterward
     #[test]
     fn static_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
         connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+        let rdpsnd = rdpsnd_channel_ptr(&connector)?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
-        Ok(())
+        assert_eq!(rdpsnd, rdpsnd_channel_ptr(&connector)?);
+        assert_rdpsnd_playback(&connector)
     }
 
     // oracle: mutant drop static playback when smartcard RDPDR is attached first
@@ -766,8 +792,7 @@ mod tests {
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
         connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
-        Ok(())
+        assert_rdpsnd_playback(&connector)
     }
 
     // oracle: mutant drop dynamic playback when smartcard RDPDR is attached afterward
@@ -836,11 +861,12 @@ mod tests {
         let mut connector = default_connector()?;
         let audio = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio")?;
         connector.with_native_audio(&audio).map_err(|_| "native audio")?;
+        let rdpsnd = rdpsnd_channel_ptr(&connector)?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
-        Ok(())
+        assert_eq!(rdpsnd, rdpsnd_channel_ptr(&connector)?);
+        assert_native_playback(&connector)
     }
 
     // oracle: mutant drop native playback when smartcard RDPDR is attached first
@@ -852,8 +878,7 @@ mod tests {
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
         connector.with_native_audio(&audio).map_err(|_| "native audio")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
-        Ok(())
+        assert_native_playback(&connector)
     }
 
     #[cfg(windows)]
@@ -884,8 +909,7 @@ mod tests {
     fn static_playback_can_follow_drive_compatibility() -> Result<(), &'static str> {
         let mut connector = connector_with_drive(None)?;
         connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
-        Ok(())
+        assert_rdpsnd_playback(&connector)
     }
 
     #[cfg(windows)]
@@ -908,8 +932,7 @@ mod tests {
         let mut connector = connector_with_drive(None)?;
         let audio = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio")?;
         connector.with_native_audio(&audio).map_err(|_| "native audio")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
-        Ok(())
+        assert_native_playback(&connector)
     }
 
     #[cfg(windows)]
@@ -962,7 +985,7 @@ mod tests {
 
     fn add_test_static_channels(connector: &mut ClientConnector, count: usize) -> Result<(), &'static str> {
         for index in 0..count {
-            add_test_static_channel(connector, &format!("C{index:07}"))?;
+            add_test_static_channel(connector, &format!("C{index:06}"))?;
         }
         Ok(())
     }
@@ -1153,12 +1176,7 @@ mod tests {
         let _file = TestFile(path.clone());
         drop(file);
         let root = root.to_string_lossy();
-        let mut builder = ConfigBuilder::new();
-        builder.with_username_and_password("user", "password");
-        builder.set_desktop_size(768, 1024);
-        builder.set_client_name("client");
-        builder.set_client_dir("C:\\");
-        builder.set_performance_flags(&PerformanceFlags::new_default());
+        let mut builder = default_builder();
         builder
             .add_redirected_drive("ReadOnly", &root, true)
             .map_err(|_| "read-only drive")?;

@@ -86,6 +86,7 @@ Relative, parent-directory, UNC, device and verbatim paths are rejected.
 Drive names must be distinct after device-name sanitization and Unicode uppercase conversion.
 The path syntax is checked when adding the drive.
 The directory must exist and be accessible when the server requests file I/O; it is not opened during configuration.
+Remote opens do not follow reparse points, so a root reached through a junction, symbolic link or mount point fails at that time; select the resolved directory instead.
 Drive redirection is supported only on Windows; other platforms return an error.
 
 Call `ActiveStage.PollRdpdrDeferred()` on a short timer, such as every 50 ms, even while the server sends no frames.

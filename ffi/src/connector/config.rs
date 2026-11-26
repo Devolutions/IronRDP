@@ -482,17 +482,22 @@ impl From<PerformanceFlagsType> for PerformanceFlags {
 mod tests {
     use ironrdp::pdu::rdp::capability_sets::CodecProperty;
 
-    #[cfg(windows)]
-    // oracle: mutant reuse one read-only setting for every configured drive
-    #[test]
-    fn redirected_drives_keep_independent_read_only_settings() {
-        let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+    fn buildable_builder() -> Box<super::ffi::ConfigBuilder> {
         let mut builder = super::ffi::ConfigBuilder::new();
         builder.with_username_and_password("user", "password");
         builder.set_desktop_size(768, 1024);
         builder.set_client_name("client");
         builder.set_client_dir("C:\\");
         builder.set_performance_flags(&super::ffi::PerformanceFlags::new_default());
+        builder
+    }
+
+    #[cfg(windows)]
+    // oracle: mutant reuse one read-only setting for every configured drive
+    #[test]
+    fn redirected_drives_keep_independent_read_only_settings() {
+        let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        let mut builder = buildable_builder();
         assert!(builder.add_redirected_drive("ReadOnly", &root_path, true).is_ok());
         assert!(builder.add_redirected_drive("Writable", &root_path, false).is_ok());
 
@@ -506,6 +511,8 @@ mod tests {
     }
 
     // oracle: mutant sanitize two distinct names to different wire names
+    // The colliding pairs follow the drive DeviceData encoding in ironrdp-rdpdr (`DeviceAnnounceHeader::new_drive`)
+    // followed by Unicode uppercase conversion; no specification defines this mapping.
     #[test]
     fn drive_names_collide_after_wire_sanitization_and_case_folding() {
         assert_eq!(
@@ -522,7 +529,7 @@ mod tests {
     #[test]
     fn duplicate_wire_names_are_rejected_without_changing_drives() {
         let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
-        let mut builder = super::ffi::ConfigBuilder::new();
+        let mut builder = buildable_builder();
         assert!(builder.add_redirected_drive("Projects/Docs", &root_path, true).is_ok());
         assert!(
             builder
@@ -530,11 +537,6 @@ mod tests {
                 .is_err()
         );
         assert!(builder.add_redirected_drive("Other", &root_path, false).is_ok());
-        builder.with_username_and_password("user", "password");
-        builder.set_desktop_size(768, 1024);
-        builder.set_client_name("client");
-        builder.set_client_dir("C:\\");
-        builder.set_performance_flags(&super::ffi::PerformanceFlags::new_default());
         let Ok(config) = builder.build() else {
             panic!("valid configuration");
         };
@@ -553,12 +555,7 @@ mod tests {
 
     #[test]
     fn build_offers_remotefx_when_no_bitmap_config_is_set() {
-        let mut builder = super::ffi::ConfigBuilder::new();
-        builder.with_username_and_password("user", "password");
-        builder.set_desktop_size(768, 1024);
-        builder.set_client_name("client");
-        builder.set_client_dir("C:\\");
-        builder.set_performance_flags(&super::ffi::PerformanceFlags::new_default());
+        let builder = buildable_builder();
 
         let Ok(config) = builder.build() else {
             panic!("a builder with every required field should build");
