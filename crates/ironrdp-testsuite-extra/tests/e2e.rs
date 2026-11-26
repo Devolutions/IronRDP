@@ -3543,14 +3543,14 @@ type FrameRewrite = fn(&[u8]) -> Option<Vec<u8>>;
 /// for a client that set INFO_LOGONNOTIFY, in the long form when it also set LONG_CREDENTIALS_SUPPORTED, and a
 /// plain notification otherwise.
 // oracle: spec MS-RDPBCGR §3.3.5.10.1
-// The IronRDP client sets INFO_LOGONNOTIFY and not LONG_CREDENTIALS_SUPPORTED, so the other cases rewrite what it sends.
+// The IronRDP client sets INFO_LOGONNOTIFY and LONG_CREDENTIALS_SUPPORTED, so the other cases rewrite what it sends.
 #[rstest::rstest]
-#[case::logon_notify(None, InfoType::Logon, Some((LOGON_USER, LOGON_DOMAIN)))]
-#[case::logon_notify_with_long_credentials(
-    Some::<FrameRewrite>(confirm_active_with_long_credentials),
-    InfoType::LogonLong,
+#[case::logon_notify(
+    Some::<FrameRewrite>(confirm_active_without_long_credentials),
+    InfoType::Logon,
     Some((LOGON_USER, LOGON_DOMAIN))
 )]
+#[case::logon_notify_with_long_credentials(None, InfoType::LogonLong, Some((LOGON_USER, LOGON_DOMAIN)))]
 #[case::no_logon_notify(Some::<FrameRewrite>(client_info_without_logon_notify), InfoType::PlainNotify, None)]
 #[tokio::test]
 async fn the_logon_notification_follows_the_client_flags(
@@ -3593,7 +3593,13 @@ async fn logon_information_is_sent_only_when_the_names_fit(
     #[case] domain: String,
     #[case] info_type: InfoType,
 ) {
-    let session = logon_session(None, &user, &domain).await;
+    // The fixed fields are those of the short form, which a client without LONG_CREDENTIALS_SUPPORTED gets.
+    let session = logon_session(
+        Some::<FrameRewrite>(confirm_active_without_long_credentials),
+        &user,
+        &domain,
+    )
+    .await;
 
     let info_types = session
         .logon_notifications()
@@ -3663,7 +3669,8 @@ async fn the_logon_information_names_the_auto_reconnect_session() {
         .infos
         .iter()
         .filter_map(|(_, info)| match &info.info_data {
-            InfoData::LogonInfoV1(LogonInfoVersion1 { logon_info }) => Some(logon_info.session_id),
+            InfoData::LogonInfoV1(LogonInfoVersion1 { logon_info })
+            | InfoData::LogonInfoV2(LogonInfoVersion2 { logon_info }) => Some(logon_info.session_id),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -4004,9 +4011,9 @@ fn client_info_without_logon_notify(frame: &[u8]) -> Option<Vec<u8>> {
     .ok()
 }
 
-/// Re-encodes `frame` with LONG_CREDENTIALS_SUPPORTED set in its General Capability Set, if it is a Confirm Active
-/// PDU.
-fn confirm_active_with_long_credentials(frame: &[u8]) -> Option<Vec<u8>> {
+/// Re-encodes `frame` with LONG_CREDENTIALS_SUPPORTED cleared in its General Capability Set, if it is a Confirm
+/// Active PDU.
+fn confirm_active_without_long_credentials(frame: &[u8]) -> Option<Vec<u8>> {
     let request = decode::<X224<pdu::mcs::SendDataRequest<'_>>>(frame).ok()?.0;
     let mut header = decode::<ShareControlHeader>(&request.user_data).ok()?;
     let ShareControlPdu::ClientConfirmActive(confirm) = &mut header.share_control_pdu else {
@@ -4022,7 +4029,7 @@ fn confirm_active_with_long_credentials(frame: &[u8]) -> Option<Vec<u8>> {
         })?;
     general
         .extra_flags
-        .insert(GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED);
+        .remove(GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED);
     let user_data = encode_vec(&header).ok()?;
     encode_vec(&X224(pdu::mcs::SendDataRequest {
         user_data: user_data.into(),
