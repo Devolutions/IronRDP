@@ -2825,11 +2825,12 @@ fn build_connector(
         AudioPlaybackMode::Client if !sound => AudioPlaybackMode::Disabled,
         mode => mode,
     };
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    let audio_playback = audio_playback_mode == AudioPlaybackMode::Client;
 
     // Audio output: one backend for the static RDPSND channel and the AUDIO_PLAYBACK_DVC channels.
     #[cfg(feature = "sound")]
-    let playback = (audio_playback_mode == AudioPlaybackMode::Client)
-        .then(|| crate::audio::SharedPlayback::new(&config.channels.audio));
+    let playback = audio_playback.then(|| crate::audio::SharedPlayback::new(&config.channels.audio));
     #[cfg(feature = "sound")]
     if let Some(playback) = &playback {
         drdynvc = crate::audio::attach_playback(drdynvc, playback, config.audio_quality_mode.into_rdpsnd());
@@ -2871,8 +2872,6 @@ fn build_connector(
         });
     }
 
-    #[cfg(any(feature = "sound", feature = "rdpdr"))]
-    let audio_playback = audio_playback_mode == AudioPlaybackMode::Client;
     let rail_client = if connector_config.remote_application_mode {
         let rail_client = RailClient::new(
             connector_config.client_build,
@@ -2959,8 +2958,7 @@ fn build_connector(
 
     #[cfg(feature = "sound")]
     if matches!(rdpsnd_kind, Some(RdpsndBackendKind::Playback)) {
-        // INVARIANT: `audio_playback` is the condition that created `playback`,
-        // so the static channel and the dynamic channels drive the same backend.
+        // `playback` exists whenever `audio_playback` holds, so the static channel and the dynamic channels drive the same backend.
         let playback = playback.expect("the shared playback backend exists when audio playback is enabled");
         connector = connector.with_static_channel(
             ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))
