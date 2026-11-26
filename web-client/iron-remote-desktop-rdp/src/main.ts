@@ -224,6 +224,20 @@ export function keyboardLayout(layoutId: number): Extension {
     return new Extension('keyboard_layout', layoutId);
 }
 
+// --- Session extensions (pass to `Session.invokeExtension`) ---
+
+/**
+ * Stop (`false`) or resume (`true`) the server's display updates, as a desktop client does when its window
+ * is minimized or restored.
+ *
+ * Call it on `visibilitychange`, for example.
+ * Resuming repaints the whole desktop.
+ * The call is ignored when the server does not support the Suppress Output PDU.
+ */
+export function displayUpdates(allow: boolean): Extension {
+    return new Extension('display_updates', allow);
+}
+
 // --- RDCleanPath ---
 
 export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';

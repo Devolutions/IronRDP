@@ -896,6 +896,10 @@ pub(crate) enum RdpInputEvent {
         scale_factor: Option<u32>,
         physical_size: Option<(u32, u32)>,
     },
+    /// Stop (`false`) or resume (`true`) the server's display updates.
+    DisplayUpdates {
+        allow: bool,
+    },
     TerminateSession,
 }
 
@@ -1060,6 +1064,8 @@ impl iron_remote_desktop::Session for Session {
 
         // We retain the factory to drive the Deactivation-Reactivation Sequence locally.
         let activation_factory = connection_result.activation_factory;
+
+        let mut suppress_output_support = connection_result.suppress_output_support;
 
         let mut active_stage = ActiveStageBuilder {
             static_channels: connection_result.static_channels,
@@ -1237,6 +1243,16 @@ impl iron_remote_desktop::Session for Session {
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
+                                Vec::new()
+                            }
+                        },
+                        RdpInputEvent::DisplayUpdates { allow } => {
+                            // UNTESTED: no test sends a toggle through this loop; `display_updates_toggle` is tested.
+                            if let Some(resume) = display_updates_toggle(suppress_output_support, allow, (image.width(), image.height())) {
+                                debug!(allow, "Display updates toggled");
+                                vec![ActiveStageOutput::ResponseFrame(active_stage.encode_suppress_output(resume)?)]
+                            } else {
+                                debug!("Display updates toggle ignored: the server does not support Suppress Output");
                                 Vec::new()
                             }
                         },
@@ -1449,6 +1465,7 @@ impl iron_remote_desktop::Session for Session {
                                 pointer_software_rendering,
                                 static_channel_chunk_size,
                                 window_support_level,
+                                suppress_output_support: reactivated_suppress_output_support,
                                 ..
                             } = connection_activation.connection_activation_state()
                             {
@@ -1473,6 +1490,7 @@ impl iron_remote_desktop::Session for Session {
                                     return Err(IronError::from(anyhow::anyhow!("invalid static channel chunk size")));
                                 }
                                 active_stage.set_window_support_level(window_support_level);
+                                suppress_output_support = reactivated_suppress_output_support;
                                 break 'activation_seq;
                             }
                         }
@@ -1652,6 +1670,19 @@ impl iron_remote_desktop::Session for Session {
                         },
                     ))
                     .context("send file contents response")
+                    .map_err(IronError::from)?;
+
+                return Ok(JsValue::NULL);
+            };
+            |display_updates: JsValue| {
+                let allow = display_updates
+                    .as_bool()
+                    .context("display_updates expects a boolean")
+                    .map_err(IronError::from)?;
+
+                self.input_events_tx
+                    .unbounded_send(RdpInputEvent::DisplayUpdates { allow })
+                    .context("send display updates toggle")
                     .map_err(IronError::from)?;
 
                 return Ok(JsValue::NULL);
@@ -2442,6 +2473,14 @@ fn ensure_framebuffer_allocatable(desktop_size: connector::DesktopSize) -> anyho
         .with_context(|| format!("not enough memory for a {width}x{height} desktop framebuffer"))?;
 
     Ok(())
+}
+
+/// What a display updates toggle sends.
+///
+/// Returns `Some(resume)`, with `resume` as taken by `ActiveStage::encode_suppress_output`, when the server supports
+/// the Suppress Output PDU, and `None` when it does not and nothing is sent.
+fn display_updates_toggle(server_support: bool, allow: bool, desktop_size: (u16, u16)) -> Option<Option<(u16, u16)>> {
+    server_support.then_some(allow.then_some(desktop_size))
 }
 
 /// Returns the canvas dimensions to apply when the graphics output changed size since it was
@@ -3265,6 +3304,17 @@ mod tests {
             }
             _ => panic!("Expected correct flags conversion"),
         }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn display_updates_toggle_is_sent_only_while_the_server_supports_it() {
+        // oracle: spec MS-RDPBCGR §2.2.7.1.1 - suppressOutputSupport tells whether the server supports the PDU.
+        // oracle: spec MS-RDPBCGR §2.2.11.3.1 - desktopRect is present only when updates are allowed.
+        assert_eq!(display_updates_toggle(true, false, (1024, 768)), Some(None));
+        assert_eq!(display_updates_toggle(true, true, (1024, 768)), Some(Some((1024, 768))));
+        assert_eq!(display_updates_toggle(false, false, (1024, 768)), None);
+        assert_eq!(display_updates_toggle(false, true, (1024, 768)), None);
     }
 
     #[cfg(target_arch = "wasm32")]
