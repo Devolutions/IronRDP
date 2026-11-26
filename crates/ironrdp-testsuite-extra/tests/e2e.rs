@@ -4209,10 +4209,7 @@ fn auto_reconnect_server(on_request: bool) -> (RdpServer, UnboundedSender<Displa
             rx: Arc::new(Mutex::new(display_rx)),
             offers_display_control: true,
         })
-        .with_auto_reconnect_cookie(Some(ServerAutoReconnect {
-            logon_id: 1,
-            random_bits: [0x5a; 16],
-        }))
+        .with_auto_reconnect_cookie(Some(issued_auto_reconnect_cookie()))
         .with_auto_reconnect_on_request(on_request)
         .build();
     server.set_credentials(Some(server::Credentials {
@@ -4266,17 +4263,21 @@ where
                 server.run().await.unwrap();
             });
 
-            let client = tokio::task::spawn_local(async move {
-                let (tx, rx) = oneshot::channel();
-                ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
-                let server_addr = rx.await.unwrap().unwrap();
-                let result = client(server_addr, cookie_handle, server_handle, display_tx).await;
-                ev.send(ServerEvent::Quit("bye".into())).unwrap();
-                result
+            let client = tokio::task::spawn_local({
+                let ev = ev.clone();
+                async move {
+                    let (tx, rx) = oneshot::channel();
+                    ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
+                    let server_addr = rx.await.unwrap().unwrap();
+                    client(server_addr, cookie_handle, server_handle, display_tx).await
+                }
             });
 
-            let (server, client) = tokio::join!(server, client);
-            server.expect("server task");
+            // Stop the server once the client is done, also when it panicked, so a failing assertion fails the test
+            // instead of leaving it waiting on the server.
+            let client = client.await;
+            let _ = ev.send(ServerEvent::Quit("bye".into()));
+            server.await.expect("server task");
             client.expect("client task")
         })
         .await
@@ -4293,8 +4294,17 @@ struct CookieProbe {
 impl CookieProbe {
     /// Connects to `server_addr`, presenting `cookie` as an auto-reconnect cookie if given.
     async fn connect(server_addr: SocketAddr, cookie: Option<ServerAutoReconnect>) -> Self {
-        let (stage, activation_factory, framed) =
-            connect_active_client(server_addr, default_client_config(), cookie).await;
+        Self::connect_with(server_addr, default_client_config(), cookie).await
+    }
+
+    /// Connects to `server_addr` as [`Self::connect`] does, with `client_config` instead of the default client
+    /// configuration.
+    async fn connect_with(
+        server_addr: SocketAddr,
+        client_config: connector::Config,
+        cookie: Option<ServerAutoReconnect>,
+    ) -> Self {
+        let (stage, activation_factory, framed) = connect_active_client(server_addr, client_config, cookie).await;
 
         Self {
             stage,
@@ -4378,8 +4388,10 @@ impl CookieProbe {
         }
     }
 
-    /// Whether the server accepts the cookie this client presented. An accepted cookie is
-    /// answered with a fresh one at activation; a rejected cookie ends the connection.
+    /// Whether the server accepts the cookie this client presented.
+    /// An accepted cookie is answered with a fresh one at activation.
+    /// A cookie that doesn't verify is a normal logon, which on request gets no cookie until the embedder vouches for
+    /// it.
     async fn cookie_accepted(&mut self, window: Duration) -> bool {
         self.watch_for_cookie(window).await.unwrap_or(false)
     }
@@ -4430,7 +4442,7 @@ async fn an_auto_reconnect_cookie_the_embedder_issues_invalidates_the_previous_o
         random_bits: [0x22; 16],
     };
 
-    let (first_still_works, second_works) = with_auto_reconnect_server(true, {
+    let (first_cookie, second_works) = with_auto_reconnect_server(true, {
         let (first, second) = (first.clone(), second.clone());
         async move |server_addr, cookie_handle, _display_tx| {
             // The embedder vouches for one connection, then for another.
@@ -4448,21 +4460,28 @@ async fn an_auto_reconnect_cookie_the_embedder_issues_invalidates_the_previous_o
                 probe.disconnect().await;
             }
 
-            // A verified cookie is sent another one at activation; a rejected one ends the connection.
+            // A verified cookie is sent another one at activation.
+            // One that doesn't verify logs on normally, and on request that connection gets no cookie.
             let mut with_first = CookieProbe::connect(server_addr, Some(first)).await;
-            let first_still_works = with_first.cookie_accepted(Duration::from_secs(1)).await;
+            let first_cookie = with_first.watch_for_cookie(Duration::from_secs(1)).await;
             drop(with_first);
 
             let mut with_second = CookieProbe::connect(server_addr, Some(second)).await;
             let second_works = with_second.cookie_accepted(Duration::from_secs(1)).await;
             with_second.disconnect().await;
 
-            (first_still_works, second_works)
+            (first_cookie, second_works)
         }
     })
     .await;
 
-    assert!(!first_still_works, "the earlier client's cookie is no longer accepted");
+    // oracle: spec MS-RDPBCGR §3.3.5.3.11 (a cookie that fails falls back to a normal logon)
+    // oracle: mutant the fallback reported to the embedder as auto-reconnected
+    assert_eq!(
+        first_cookie,
+        Ok(false),
+        "the earlier client's cookie is no longer accepted, so it logs on normally and gets no cookie"
+    );
     assert!(second_works, "the newest cookie is accepted");
 }
 
@@ -4514,6 +4533,328 @@ impl server::CredentialValidator for RejectingValidator {
         _credentials: &server::Credentials,
     ) -> Result<server::CredentialDecision, server::CredentialValidationError> {
         Ok(server::CredentialDecision::Reject)
+    }
+}
+
+/// The cookie the test server is configured with, as one a client was issued before it lost its connection.
+fn issued_auto_reconnect_cookie() -> ServerAutoReconnect {
+    ServerAutoReconnect {
+        logon_id: 1,
+        random_bits: [0x5a; 16],
+    }
+}
+
+/// A cookie the test server never issued, as one issued before a server restarted.
+fn stale_auto_reconnect_cookie() -> ServerAutoReconnect {
+    ServerAutoReconnect {
+        logon_id: 1,
+        random_bits: [0x77; 16],
+    }
+}
+
+/// A client that comes back with a cookie the server can't verify, such as one issued before the server restarted, logs
+/// on with its credentials instead, and is sent a fresh cookie at activation like any other connection.
+///
+/// MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU: "If logon with the cookie fails, the credentials supplied in the
+/// Client Info PDU SHOULD be used".
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
+// oracle: spec MS-RDPBCGR §3.3.5.3.11
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_falls_back_to_a_normal_logon() {
+    let admitted = with_auto_reconnect_server(false, async |server_addr, _cookie_handle, _display_tx| {
+        let mut probe = CookieProbe::connect(server_addr, Some(stale_auto_reconnect_cookie())).await;
+        let admitted = probe.cookie_within(Duration::from_secs(5)).await;
+        probe.disconnect().await;
+        admitted
+    })
+    .await;
+
+    assert!(admitted, "the client logs on and receives a fresh cookie");
+}
+
+/// With a credential validator, a client whose cookie fails logs on when the validator accepts its Client Info
+/// credentials.
+/// MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU says the server SHOULD use them when the cookie fails.
+///
+/// The credentials aren't empty, so the validator accepts only the ones the client sent.
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
+// oracle: spec MS-RDPBCGR §3.3.5.3.11
+// oracle: mutant the fallback validating empty credentials instead of the client's
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_credentials_the_validator_accepts() {
+    let credentials = server::Credentials {
+        username: "alice".into(),
+        password: "secret".into(),
+        domain: None,
+    };
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_credentials(Some(credentials.clone()));
+    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+        credentials.clone(),
+    ))));
+    let client_config = connector::Config {
+        credentials: connector::Credentials::UsernamePassword {
+            username: credentials.username,
+            password: credentials.password,
+        },
+        ..default_client_config()
+    };
+
+    let admitted = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let mut probe =
+                CookieProbe::connect_with(server_addr, client_config, Some(stale_auto_reconnect_cookie())).await;
+            let admitted = probe.cookie_within(Duration::from_secs(5)).await;
+            probe.disconnect().await;
+            admitted
+        },
+    )
+    .await;
+
+    assert!(admitted, "the validator accepts the credentials, so the client logs on");
+}
+
+/// The same under NLA: CredSSP with HYBRID_EX runs the credential validator on the delegated credentials before the
+/// cookie is read, and a cookie that then fails doesn't run it again.
+/// The client still logs on, as MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU asks when the cookie fails.
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_logs_on_after_nla() {
+    let (mut server, display_tx) = hybrid_server();
+    server.set_auto_reconnect_cookie(Some(issued_auto_reconnect_cookie()));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    server.set_credential_validator(Some(Arc::new(RecordingCredentialValidator(Arc::clone(&calls)))));
+
+    let admitted = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let mut probe =
+                CookieProbe::connect_with(server_addr, hybrid_client_config(), Some(stale_auto_reconnect_cookie()))
+                    .await;
+            let admitted = probe.cookie_within(Duration::from_secs(5)).await;
+            probe.disconnect().await;
+            admitted
+        },
+    )
+    .await;
+
+    // oracle: spec MS-RDPBCGR §3.3.5.3.11
+    assert!(admitted, "the client logs on after NLA and receives a fresh cookie");
+    // oracle: mutant the fallback running the validator again after HYBRID_EX
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [(HYBRID_USER.to_owned(), Some(server::CredentialOrigin::CredSspDelegated))],
+        "the validator runs once, during CredSSP"
+    );
+}
+
+/// The same under plain HYBRID, which FreeRDP before 3.32 negotiates by default: CredSSP leaves the credential validator
+/// to the cookie, so when the cookie fails it runs once, on the credentials CredSSP delegated, with their origin.
+/// The client logs on, as MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU asks when the cookie fails.
+///
+/// The IronRDP client always offers HYBRID_EX, so the connection goes through [`relay_without_hybrid_ex`], and the
+/// server selects plain HYBRID.
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_the_delegated_credentials_under_plain_hybrid() {
+    let (mut server, display_tx) = hybrid_server();
+    server.set_auto_reconnect_cookie(Some(issued_auto_reconnect_cookie()));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    server.set_credential_validator(Some(Arc::new(RecordingCredentialValidator(Arc::clone(&calls)))));
+
+    let (admitted, rewritten) = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let (relay_addr, rewritten) = relay_without_hybrid_ex(server_addr).await;
+            let mut probe =
+                CookieProbe::connect_with(relay_addr, hybrid_client_config(), Some(stale_auto_reconnect_cookie()))
+                    .await;
+            let admitted = probe.cookie_within(Duration::from_secs(5)).await;
+            probe.disconnect().await;
+            (admitted, rewritten.load(Ordering::Relaxed))
+        },
+    )
+    .await;
+
+    assert!(
+        rewritten,
+        "the relay did not clear HYBRID_EX from the Connection Request"
+    );
+    // oracle: spec MS-RDPBCGR §3.3.5.3.11
+    assert!(
+        admitted,
+        "the client logs on under plain HYBRID and receives a fresh cookie"
+    );
+    // oracle: mutant the acceptor dropping a cookie attempt's delegated credentials before the server takes them
+    // oracle: mutant the fallback validating the Client Info credentials instead of the delegated ones
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [(HYBRID_USER.to_owned(), Some(server::CredentialOrigin::CredSspDelegated))],
+        "the validator runs once, on the credentials CredSSP delegated"
+    );
+}
+
+/// Relays one connection to `server_addr` with `PROTOCOL_HYBRID_EX` cleared in the client's X.224 Connection Request,
+/// so a server that offers both CredSSP protocols selects plain HYBRID.
+///
+/// The Connection Request is the client's first TPKT and goes out before the security upgrade, so everything after it
+/// is copied unchanged. The returned flag is set once a request that offered HYBRID_EX has been sent on without it.
+async fn relay_without_hybrid_ex(server_addr: SocketAddr) -> (SocketAddr, Arc<AtomicBool>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind the relay");
+    let relay_addr = listener.local_addr().expect("relay address");
+    let rewritten = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&rewritten);
+    tokio::spawn(async move {
+        let (mut client, _) = listener.accept().await.expect("accept the client");
+        let mut server = TcpStream::connect(server_addr).await.expect("connect to the server");
+
+        let mut request = vec![0; 4];
+        client.read_exact(&mut request).await.expect("read the TPKT header");
+        request.resize(usize::from(u16::from_be_bytes([request[2], request[3]])), 0);
+        client
+            .read_exact(&mut request[4..])
+            .await
+            .expect("read the Connection Request");
+        let mut decoded = decode::<X224<pdu::nego::ConnectionRequest>>(&request)
+            .expect("decode the Connection Request")
+            .0;
+        let offered = decoded.protocol.contains(pdu::nego::SecurityProtocol::HYBRID_EX);
+        decoded.protocol.remove(pdu::nego::SecurityProtocol::HYBRID_EX);
+        let request = encode_vec(&X224(decoded)).expect("encode the Connection Request");
+        server.write_all(&request).await.expect("send the Connection Request");
+        flag.store(offered, Ordering::Relaxed);
+
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+    });
+    (relay_addr, rewritten)
+}
+
+/// A credential validator that accepts every call and records the user name, with the origin when the server passes one
+/// through [`validate_received`].
+///
+/// [`validate_received`]: server::CredentialValidator::validate_received
+struct RecordingCredentialValidator(ValidatorCalls);
+
+/// Each call a [`RecordingCredentialValidator`] saw, as the user name and the origin when the server passed one.
+type ValidatorCalls = Arc<StdMutex<Vec<(String, Option<server::CredentialOrigin>)>>>;
+
+#[async_trait::async_trait]
+impl server::CredentialValidator for RecordingCredentialValidator {
+    async fn validate(
+        &self,
+        credentials: &server::Credentials,
+    ) -> Result<server::CredentialDecision, server::CredentialValidationError> {
+        self.0.lock().unwrap().push((credentials.username.clone(), None));
+        Ok(server::CredentialDecision::Accept)
+    }
+
+    async fn validate_received(
+        &self,
+        credentials: &server::Credentials,
+        origin: server::CredentialOrigin,
+    ) -> Result<server::CredentialDecision, server::CredentialValidationError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((credentials.username.clone(), Some(origin)));
+        Ok(server::CredentialDecision::Accept)
+    }
+}
+
+/// Falling back to a normal logon doesn't skip the credential validator.
+/// When it rejects the Client Info credentials, the connection is refused.
+// oracle: mutant the fallback admits a client whose credentials the validator rejects
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_is_refused_when_the_validator_rejects_the_credentials() {
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+        server::Credentials {
+            username: "someone-else".into(),
+            password: "other".into(),
+            domain: None,
+        },
+    ))));
+
+    let ended = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let mut probe = CookieProbe::connect(server_addr, Some(stale_auto_reconnect_cookie())).await;
+            probe.watch_for_cookie(Duration::from_secs(5)).await.is_err()
+        },
+    )
+    .await;
+
+    assert!(ended, "the server ends the connection");
+}
+
+/// With a connection binder, the server refuses every auto-reconnect attempt, whether its cookie verifies or not,
+/// because the acceptor skips capability-exchange binding for one, so admitting it would start a session no binder
+/// bound.
+/// The validator accepts the client's credentials, so nothing else refuses a fallback logon.
+// oracle: mutant a server with a connection binder admitting an auto-reconnect attempt it never binds
+#[rstest::rstest]
+#[case::stale_cookie(stale_auto_reconnect_cookie())]
+#[case::verified_cookie(issued_auto_reconnect_cookie())]
+#[tokio::test]
+async fn an_auto_reconnect_attempt_is_refused_with_a_connection_binder(#[case] cookie: ServerAutoReconnect) {
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+        server::Credentials {
+            username: USERNAME.into(),
+            password: PASSWORD.into(),
+            domain: None,
+        },
+    ))));
+    let (_bound_tx, bound_rx) = mpsc::unbounded_channel();
+    server.set_connection_binder(Some(Arc::new(TestBinder(Arc::new(Mutex::new(bound_rx))))));
+
+    // A server that admits the attempt doesn't always end the run, so the run is bounded and running out of time counts
+    // as admitted.
+    let ended = tokio::time::timeout(
+        Duration::from_secs(20),
+        with_server(
+            server,
+            display_tx,
+            async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+                let mut probe = CookieProbe::connect(server_addr, Some(cookie)).await;
+                probe.watch_for_cookie(Duration::from_secs(5)).await.is_err()
+            },
+        ),
+    )
+    .await
+    .unwrap_or(false);
+
+    assert!(ended, "the server ends the connection instead of admitting it");
+}
+
+/// A connection binder that hands every connection the test display and input handler.
+struct TestBinder(DisplayUpdatesRx);
+
+#[async_trait::async_trait]
+impl server::ConnectionBinder for TestBinder {
+    async fn bind_connection(
+        &self,
+        _credentials: &server::Credentials,
+        _desktop_size: DesktopSize,
+    ) -> ServerResult<server::BoundConnection> {
+        Ok(server::BoundConnection {
+            display: Box::new(TestDisplay {
+                rx: Arc::clone(&self.0),
+                offers_display_control: true,
+            }),
+            input: Box::new(TestInputHandler),
+        })
     }
 }
 

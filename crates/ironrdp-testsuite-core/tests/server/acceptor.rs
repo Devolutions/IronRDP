@@ -36,7 +36,9 @@ use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::rdp::ClientInfoPdu;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
-use ironrdp_pdu::rdp::client_info::{ClientInfoFlags, CompressionType, Credentials};
+use ironrdp_pdu::rdp::client_info::{
+    ClientAutoReconnect, ClientInfoFlags, CompressionType, Credentials, ExtendedClientOptionalInfo, PerformanceFlags,
+};
 use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
@@ -44,6 +46,7 @@ use ironrdp_pdu::rdp::headers::{
 };
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::{X224, X224Data};
 use ironrdp_svc::{StaticVirtualChannel, SvcMessage, SvcProcessor as _, client_encode_svc_messages};
 use ironrdp_testsuite_core::client_info::CLIENT_INFO_UNICODE;
@@ -1282,6 +1285,68 @@ fn client_info_flags_are_kept_as_sent() {
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
     assert_eq!(accepted(client_blocks, &client_info).1.client_info_flags, flags);
+}
+
+/// A client that presents an auto-reconnect cookie leaves its Client Info credentials in the acceptor after the result,
+/// for the server to log it on with if the cookie fails, until the server takes them.
+///
+/// MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU: "If logon with the cookie fails, the credentials supplied in the
+/// Client Info PDU SHOULD be used".
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
+#[test]
+fn a_cookie_attempt_keeps_its_credentials_until_the_server_takes_them() {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    let timezone = client_info
+        .extra_info
+        .optional_data
+        .timezone()
+        .expect("the fixture has a time zone")
+        .clone();
+    let performance_flags = client_info
+        .extra_info
+        .optional_data
+        .performance_flags()
+        .unwrap_or_else(PerformanceFlags::empty);
+    let cookie = ServerAutoReconnect {
+        logon_id: 1,
+        random_bits: [0x77; 16],
+    };
+    client_info.extra_info.optional_data = ExtendedClientOptionalInfo::builder()
+        .timezone(timezone)
+        .session_id(0)
+        .performance_flags(performance_flags)
+        .reconnect_cookie(ClientAutoReconnect::from_server_cookie(&cookie).to_bytes())
+        .build();
+    let username = client_info.credentials.username.clone();
+    let client_info = encode_vec(&ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info,
+    })
+    .unwrap();
+
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    let (mut acceptor, ..) = accepted(client_blocks, &client_info);
+
+    // oracle: spec MS-RDPBCGR §3.3.5.3.11 (the server logs on with the Client Info credentials if the cookie fails)
+    assert_eq!(
+        acceptor
+            .received_credentials()
+            .map(|received| received.credentials.username.as_str()),
+        Some(username.as_str())
+    );
+    // oracle: mutant take_received_credentials returning nothing
+    assert_eq!(
+        acceptor
+            .take_received_credentials()
+            .map(|received| received.credentials.username),
+        Some(username)
+    );
+    // oracle: mutant take_received_credentials leaving the credentials in the acceptor
+    assert!(acceptor.received_credentials().is_none());
 }
 
 /// An MS-RDPBCGR [1.3.1.3] Deactivation-Reactivation Sequence re-runs only the Capability Exchange and Connection
