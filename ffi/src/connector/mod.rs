@@ -15,10 +15,7 @@ pub(crate) struct RdpdrConfiguration {
 impl RdpdrConfiguration {
     #[cfg_attr(
         not(windows),
-        expect(
-            clippy::unused_self,
-            reason = "the drive list is empty by construction outside Windows"
-        )
+        expect(clippy::unused_self, reason = "the drive list is always empty outside Windows")
     )]
     fn create_rdpdr(
         &self,

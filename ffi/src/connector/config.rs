@@ -6,7 +6,9 @@ use self::ffi::PerformanceFlagsType;
 #[cfg(windows)]
 pub(crate) type RedirectedDrive = ironrdp_rdpdr_native::RedirectedDrive;
 
-/// Drive redirection is Windows-only, so this type has no values and every drive list is empty by construction.
+/// Drive redirection is Windows-only, so this type has no values.
+///
+/// INVARIANT: Every drive list with this element type is empty by construction.
 #[cfg(not(windows))]
 pub(crate) type RedirectedDrive = core::convert::Infallible;
 
@@ -506,6 +508,8 @@ mod tests {
             panic!("valid configuration");
         };
 
+        // `RedirectedDrive` keeps its read-only flag private, so its constructor is the only way to state the expectation.
+        // The IDs, names, and flags are this test's literals, and the constructor checks only path and name syntax.
         let expected = [
             super::RedirectedDrive::new(1, "ReadOnly", &root_path, true).unwrap(),
             super::RedirectedDrive::new(2, "Writable", &root_path, false).unwrap(),
