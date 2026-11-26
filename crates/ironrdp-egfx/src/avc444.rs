@@ -435,13 +435,22 @@ fn average(a: u8, b: u8, c: u8, d: u8) -> u8 {
 ///
 /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
 pub(crate) fn yuv_to_rgba(y: u8, u: u8, v: u8) -> [u8; 4] {
+    luma_to_rgba(y, chroma_terms(u, v))
+}
+
+/// The chroma part of the reverse transform, the same for every pixel sharing a chroma sample.
+pub(crate) fn chroma_terms(u: u8, v: u8) -> [i32; 3] {
+    let (u, v) = (i32::from(u) - 128, i32::from(v) - 128);
+    [403 * v, -48 * u - 120 * v, 475 * u]
+}
+
+/// Finishes the reverse transform for one pixel from its luma and its [`chroma_terms`].
+pub(crate) fn luma_to_rgba(y: u8, [r, g, b]: [i32; 3]) -> [u8; 4] {
     let luma = 256 * i32::from(y);
-    let u = i32::from(u) - 128;
-    let v = i32::from(v) - 128;
     [
-        clamp_channel((luma + 403 * v) >> 8),
-        clamp_channel((luma - 48 * u - 120 * v) >> 8),
-        clamp_channel((luma + 475 * u) >> 8),
+        clamp_channel((luma + r) >> 8),
+        clamp_channel((luma + g) >> 8),
+        clamp_channel((luma + b) >> 8),
         0xFF,
     ]
 }
