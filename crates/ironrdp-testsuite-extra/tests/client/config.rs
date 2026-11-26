@@ -825,48 +825,45 @@ ironrdp_rdpdr:i:0
     }
 }
 
-#[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-fn audiomode_two_disables_audio_playback() {
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 0 plays sounds on the local device, 1 in the remote session, 2 not at all)
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is clear only when audio plays on the client, which is what the legacy field set to true requests)
+#[rstest::rstest]
+#[case::client("0", ironrdp_connector::AudioPlaybackMode::Client, true)]
+#[case::server("1", ironrdp_connector::AudioPlaybackMode::Server, false)]
+#[case::disabled("2", ironrdp_connector::AudioPlaybackMode::Disabled, false)]
+fn audiomode_selects_audio_playback_mode(
+    #[case] audiomode: &str,
+    #[case] expected_mode: ironrdp_connector::AudioPlaybackMode,
+    #[case] expected_legacy_playback: bool,
+) {
     let config = parse_config_from_rdp(
-        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:2\n",
+        &format!(
+            "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:{audiomode}\n"
+        ),
         &[],
     );
 
-    assert!(!config.connector().enable_audio_playback);
+    assert_eq!(config.connector().audio_playback_mode(), expected_mode);
+    #[expect(
+        deprecated,
+        reason = "consumers that still read the legacy field rely on the builder mirroring the mode"
+    )]
+    let legacy_playback = config.connector().enable_audio_playback;
+    assert_eq!(legacy_playback, expected_legacy_playback);
 }
 
+// oracle: mutant an out-of-range audiomode rejected or read as disabled audio (no document decides; IronRDP keeps the default, which plays sounds on the local device)
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-fn audiomode_one_play_on_server_disables_local_playback() {
-    let config = parse_config_from_rdp(
-        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:1\n",
-        &[],
-    );
-
-    assert!(!config.connector().enable_audio_playback);
-}
-
-#[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-fn audiomode_zero_enables_client_redirection() {
-    let config = parse_config_from_rdp(
-        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:0\n",
-        &[],
-    );
-
-    assert!(config.connector().enable_audio_playback);
-}
-
-#[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn invalid_audiomode_falls_back_to_audio_playback_enabled() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:99\n",
         &[],
     );
 
-    assert!(config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Client
+    );
 }
 
 #[test]
@@ -1481,8 +1478,8 @@ fn monitor_layout_is_preserved_in_connector_configuration() {
     assert_eq!(config.connector().monitor_layout.as_ref(), Some(&monitor_layout));
 }
 
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 0 plays sounds on the local device)
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_redirect_enables_playback_channel() {
     use ironrdp_cfg::AudioMode;
 
@@ -1491,7 +1488,10 @@ fn with_audio_mode_redirect_enables_playback_channel() {
         .build()
         .expect("valid configuration");
 
-    assert!(config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Client
+    );
     assert!(config.channels().sound);
     assert_eq!(
         config.properties().audio_mode().unwrap(),
@@ -1499,8 +1499,8 @@ fn with_audio_mode_redirect_enables_playback_channel() {
     );
 }
 
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 1 plays sounds in the remote session)
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_play_on_server_disables_local_playback() {
     use ironrdp_cfg::AudioMode;
 
@@ -1509,13 +1509,16 @@ fn with_audio_mode_play_on_server_disables_local_playback() {
         .build()
         .expect("valid configuration");
 
-    assert!(!config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Server
+    );
     assert!(!config.channels().sound);
     assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::PlayOnServer));
 }
 
+// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 2 plays no sounds)
 #[test]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
 fn with_audio_mode_disabled_suppresses_sound_channel() {
     use ironrdp_cfg::AudioMode;
 
@@ -1524,7 +1527,10 @@ fn with_audio_mode_disabled_suppresses_sound_channel() {
         .build()
         .expect("valid configuration");
 
-    assert!(!config.connector().enable_audio_playback);
+    assert_eq!(
+        config.connector().audio_playback_mode(),
+        ironrdp_connector::AudioPlaybackMode::Disabled
+    );
     assert!(!config.channels().sound);
     assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::Disabled));
 }

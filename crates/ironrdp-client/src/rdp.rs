@@ -19,7 +19,7 @@ use ironrdp_cliprdr::backend::ClipboardMessage;
 #[cfg(feature = "clipboard")]
 pub use ironrdp_cliprdr::backend::CliprdrBackendFactory;
 use ironrdp_connector::connection_activation::ConnectionActivationState;
-use ironrdp_connector::{ConnectionOutcome, ConnectionResult, ConnectorResult};
+use ironrdp_connector::{AudioPlaybackMode, ConnectionOutcome, ConnectionResult, ConnectorResult};
 use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, MonitorLayoutEntry};
@@ -2457,10 +2457,6 @@ impl ironrdp_dvc::DvcChannelListener for DvcPipeProxyListener {
     clippy::too_many_arguments,
     reason = "the connector combines independent channel factories, carrier capabilities, and reconnect state"
 )]
-#[expect(
-    deprecated,
-    reason = "runtime sound overrides still write the legacy field, which has no effect once `audio_playback_mode` is set"
-)]
 fn build_connector(
     config: &Config,
     client_addr: SocketAddr,
@@ -2819,18 +2815,31 @@ fn build_connector(
         drdynvc = crate::pnp::attach(drdynvc, pnp, input_sender);
     }
 
-    // Audio output: one backend for the static RDPSND channel and the AUDIO_PLAYBACK_DVC channels.
+    // Sound turned off at runtime, or compiled out, leaves no local playback backend.
+    // Redirection to the client is then disabled, while playing on the server needs no local channel and is kept.
     #[cfg(feature = "sound")]
-    let playback = (config.channels.sound && config.connector.enable_audio_playback)
-        .then(|| crate::audio::SharedPlayback::new(&config.channels.audio));
+    let sound = config.channels.sound;
+    #[cfg(not(feature = "sound"))]
+    let sound = false;
+    let audio_playback_mode = match config.connector.audio_playback_mode() {
+        AudioPlaybackMode::Client if !sound => AudioPlaybackMode::Disabled,
+        mode => mode,
+    };
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    let audio_playback = audio_playback_mode == AudioPlaybackMode::Client;
+
+    // Audio output: one backend for the static RDPSND channel and the AUDIO_PLAYBACK_DVC channels.
+    // INVARIANT: `playback` is `Some` exactly when `audio_playback` holds.
+    #[cfg(feature = "sound")]
+    let playback = audio_playback.then(|| crate::audio::SharedPlayback::new(&config.channels.audio));
     #[cfg(feature = "sound")]
     if let Some(playback) = &playback {
         drdynvc = crate::audio::attach_playback(drdynvc, playback, config.audio_quality_mode.into_rdpsnd());
     }
 
-    // Clone the connector config so we can apply runtime overrides before handing it to the
-    // connector.  We want to set `enable_audio_playback` consistently with `channels.sound`.
+    // Clone the connector config so we can apply runtime overrides before handing it to the connector.
     let mut connector_config = config.connector.clone();
+    connector_config.audio_playback_mode = Some(audio_playback_mode);
     #[cfg(feature = "udp")]
     {
         connector_config.multitransport_flags = reliable_udp_multitransport_flags(enable_udp);
@@ -2838,16 +2847,10 @@ fn build_connector(
     #[cfg(not(feature = "udp"))]
     let _ = enable_udp;
 
-    // If sound is disabled at runtime (or the feature is off) ensure the connector doesn't
-    // advertise audio support, which would confuse the server.
+    // Without the sound feature, no capture backend exists, so the connector must not advertise one.
     #[cfg(not(feature = "sound"))]
     {
-        connector_config.enable_audio_playback = false;
         connector_config.enable_audio_capture = false;
-    }
-    #[cfg(feature = "sound")]
-    if !config.channels.sound {
-        connector_config.enable_audio_playback = false;
     }
     #[cfg(feature = "sound")]
     {
@@ -2870,8 +2873,6 @@ fn build_connector(
         });
     }
 
-    #[cfg(any(feature = "sound", feature = "rdpdr"))]
-    let audio_playback = connector_config.enable_audio_playback;
     let rail_client = if connector_config.remote_application_mode {
         let rail_client = RailClient::new(
             connector_config.client_build,
@@ -2958,9 +2959,7 @@ fn build_connector(
 
     #[cfg(feature = "sound")]
     if matches!(rdpsnd_kind, Some(RdpsndBackendKind::Playback)) {
-        // INVARIANT: `audio_playback` is `config.channels.sound && connector.enable_audio_playback`,
-        // the condition that created `playback`, so the static channel and the dynamic
-        // channels drive the same backend.
+        // `playback` is `Some` exactly when `audio_playback` holds, so the static channel and the dynamic channels drive the same backend.
         let playback = playback.expect("the shared playback backend exists when audio playback is enabled");
         connector = connector.with_static_channel(
             ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))
@@ -2993,8 +2992,11 @@ fn build_connector(
         .static_channels
         .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
         .is_some();
-    if !rdpsnd_before_extensions && config.connector.enable_audio_playback && rdpsnd_after_extensions {
-        connector.config.enable_audio_playback = true;
+    if !rdpsnd_before_extensions
+        && config.connector.audio_playback_mode() == AudioPlaybackMode::Client
+        && rdpsnd_after_extensions
+    {
+        connector.config.audio_playback_mode = Some(AudioPlaybackMode::Client);
     }
 
     // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
@@ -8208,34 +8210,18 @@ mod tests {
         assert_eq!(rdpsnd_backend_kind(false, false), None);
     }
 
-    #[derive(Debug)]
-    struct CustomRdpsndChannel;
-
-    ironrdp_core::impl_as_any!(CustomRdpsndChannel);
-
-    impl ironrdp_svc::SvcProcessor for CustomRdpsndChannel {
-        fn channel_name(&self) -> ChannelName {
-            ChannelName::from_static(b"rdpsnd\0\0")
-        }
-
-        fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
-            Ok(Vec::new())
-        }
-    }
-
-    impl ironrdp_svc::SvcClientProcessor for CustomRdpsndChannel {}
-
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
+    /// Builds a connector with sound turned off at runtime and the given `.rdp` audio playback mode.
+    #[cfg(feature = "rdpdr")]
     fn build_rdpsnd_test_connector(
         builder: crate::config::ConfigBuilder,
-        enable_audio_playback: bool,
+        audio_playback_mode: AudioPlaybackMode,
     ) -> (ironrdp_connector::ClientConnector, bool) {
         let mut config = builder.build().expect("test configuration should build");
         #[cfg(feature = "sound")]
         {
             config.channels.sound = false;
         }
-        config.connector.enable_audio_playback = enable_audio_playback;
+        config.connector.audio_playback_mode = Some(audio_playback_mode);
 
         #[cfg(feature = "clipboard")]
         let cliprdr_factory: CliprdrFactoryRef<'static> = None;
@@ -8269,70 +8255,20 @@ mod tests {
         (connector, has_rdpsnd)
     }
 
-    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
-    #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn custom_rdpsnd_static_channel_keeps_audio_playback_enabled() {
-        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
-            test_config_builder().with_static_channel(|_| Some(CustomRdpsndChannel)),
-            true,
-        );
-
-        assert!(connector.config.enable_audio_playback);
-        assert!(has_rdpsnd);
-    }
-
-    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
-    #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn custom_rdpsnd_static_channel_instances_keeps_audio_playback_enabled() {
-        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
-            test_config_builder().with_static_channel_instances(|_| vec![CustomRdpsndChannel]),
-            true,
-        );
-
-        assert!(connector.config.enable_audio_playback);
-        assert!(has_rdpsnd);
-    }
-
-    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when playback is disabled)
-    #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn custom_rdpsnd_static_channel_respects_disabled_audio_playback() {
-        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
-            test_config_builder().with_static_channel(|_| Some(CustomRdpsndChannel)),
-            false,
-        );
-
-        assert!(!connector.config.enable_audio_playback);
-        assert!(has_rdpsnd);
-    }
-
-    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when no playback channel is registered)
-    #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn missing_rdpsnd_static_channel_disables_audio_playback() {
-        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(test_config_builder(), true);
-
-        assert!(!connector.config.enable_audio_playback);
-        assert!(!has_rdpsnd);
-    }
-
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when only the no-op RDPDR companion channel is registered)
     #[cfg(feature = "rdpdr")]
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn noop_rdpsnd_companion_keeps_audio_playback_disabled() {
-        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(test_config_builder().with_rdpdr(true), true);
+        let (connector, has_rdpsnd) =
+            build_rdpsnd_test_connector(test_config_builder().with_rdpdr(true), AudioPlaybackMode::Client);
 
-        assert!(!connector.config.enable_audio_playback);
+        assert_eq!(connector.config.audio_playback_mode(), AudioPlaybackMode::Disabled);
         assert!(has_rdpsnd);
     }
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND, even when RDPDR is enabled)
     #[cfg(feature = "rdpdr")]
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn custom_rdpsnd_with_rdpdr_keeps_audio_playback_enabled() {
         let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
             test_config_builder().with_rdpdr(true).with_static_channel(|_| {
@@ -8340,10 +8276,10 @@ mod tests {
                     ironrdp_rdpsnd::client::NoopRdpsndBackend,
                 )))
             }),
-            true,
+            AudioPlaybackMode::Client,
         );
 
-        assert!(connector.config.enable_audio_playback);
+        assert_eq!(connector.config.audio_playback_mode(), AudioPlaybackMode::Client);
         assert!(has_rdpsnd);
     }
 }

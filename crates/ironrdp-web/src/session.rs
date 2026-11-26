@@ -482,7 +482,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     async fn connect(&self) -> Result<Self::Session, Self::Error> {
         let (
             username,
@@ -607,7 +606,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         // Audio playback (RDPSND) when a callback takes the audio.
         let audio_playback_callback = self.0.borrow().audio_playback_callback.clone();
-        config.enable_audio_playback = audio_playback_callback.is_some();
+        config.audio_playback_mode = Some(if audio_playback_callback.is_some() {
+            connector::AudioPlaybackMode::Client
+        } else {
+            connector::AudioPlaybackMode::Disabled
+        });
 
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;

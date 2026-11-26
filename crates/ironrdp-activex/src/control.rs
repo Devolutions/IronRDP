@@ -3357,6 +3357,105 @@ fn audio_mode_from_raw(value: i32) -> Result<AudioMode> {
     }
 }
 
+/// Records the connection settings a connect request resolved, as the MSTSC properties report them.
+fn apply_rpc_config(
+    compatibility: &mut CompatibilitySettings,
+    config: &ironrdp_client::config::Config,
+    certificate_validation: CertificateValidation,
+) {
+    let connector = config.connector();
+    compatibility.enable_credssp = Some(connector.enable_credssp);
+    compatibility.enable_tls = Some(connector.enable_tls);
+    compatibility.compression = Some(connector.compression_type.is_some());
+    compatibility.bitmap_persistence = config.channels().egfx_persistent_cache.is_some();
+    compatibility.compression_level = connector.compression_type.map(|compression| match compression {
+        ironrdp_pdu::rdp::client_info::CompressionType::K8 => 0,
+        ironrdp_pdu::rdp::client_info::CompressionType::K64 => 1,
+        ironrdp_pdu::rdp::client_info::CompressionType::Rdp6 => 2,
+        ironrdp_pdu::rdp::client_info::CompressionType::Rdp61 => 3,
+    });
+    compatibility.redirect_clipboard = matches!(config.channels().clipboard, ClipboardType::Enable);
+    compatibility.redirect_webauthn = config.channels().webauthn;
+    compatibility.performance_flags = connector.performance_flags;
+    compatibility.keyboard_type = connector.keyboard_type;
+    compatibility.keyboard_subtype = connector.keyboard_subtype;
+    compatibility.keyboard_functional_keys_count = connector.keyboard_functional_keys_count;
+    compatibility.keyboard_layout = connector.keyboard_layout;
+    compatibility.network_connection_type = connector.connection_type;
+    compatibility.desktop_scale_factor = Some(connector.desktop_scale_factor);
+    compatibility.client_build = connector.client_build;
+    compatibility.client_dir = connector.client_dir.clone();
+    compatibility.client_name = Some(connector.client_name.clone());
+    compatibility.ime_file_name = connector.ime_file_name.clone();
+    compatibility.digital_product_id = connector.dig_product_id.clone();
+    compatibility.autologon = Some(connector.autologon);
+    compatibility.rdp_port = Some(config.destination().port());
+    compatibility.fake_events_interval_minutes = config
+        .fake_events_interval()
+        .map(|interval| u32::try_from(interval.as_secs() / 60).unwrap_or(u32::MAX));
+    compatibility.keep_alive_interval_seconds = config
+        .input_keepalive_interval()
+        .map(|interval| u32::try_from(interval.as_secs()).unwrap_or(u32::MAX))
+        .map(|seconds| i32::from_ne_bytes(seconds.to_ne_bytes()))
+        .unwrap_or(0);
+    compatibility.min_input_send_interval_ms = config
+        .input_send_interval()
+        .map(|interval| i32::try_from(interval.as_millis()).unwrap_or(i32::MAX))
+        .unwrap_or(DEFAULT_MIN_INPUT_SEND_INTERVAL_MS);
+    // MSTSC AudioRedirectionMode values: https://learn.microsoft.com/windows/win32/termserv/imsrdpclientadvancedsettings5-audioredirectionmode
+    compatibility.audio_redirection_mode = match connector.audio_playback_mode() {
+        ironrdp_connector::AudioPlaybackMode::Client => 0,
+        ironrdp_connector::AudioPlaybackMode::Server => 1,
+        ironrdp_connector::AudioPlaybackMode::Disabled => 2,
+    };
+    compatibility.audio_capture_redirection_mode = if connector.enable_audio_capture {
+        VARIANT_TRUE.0
+    } else {
+        VARIANT_FALSE.0
+    };
+    compatibility.load_balance_info = config
+        .properties()
+        .get::<&str>("loadbalanceinfo")
+        .unwrap_or_default()
+        .to_owned();
+    compatibility.administrative_session = config.administrative_session();
+    compatibility.use_redirection_server_name = config.use_redirection_server_name();
+    compatibility.audio_quality_mode = config.audio_quality_mode();
+    compatibility.secured_start_program = connector.alternate_shell.clone();
+    compatibility.secured_work_dir = connector.work_dir.clone();
+    compatibility.authentication_level_set =
+        certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate;
+    compatibility.authentication_level = if compatibility.authentication_level_set { 0 } else { 1 };
+    match config.transport() {
+        Transport::Direct => {
+            compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
+        }
+        Transport::Gateway(gateway) => {
+            compatibility.gateway_hostname = gateway.endpoint.clone();
+            compatibility.gateway_username = gateway.username.clone();
+            compatibility.gateway_password = gateway.password.clone();
+            compatibility.gateway_domain.clear();
+            compatibility.gateway_usage_method = GatewayUsageMethod::UseAlways.as_i64() as u32;
+            compatibility.gateway_creds_source = GatewayCredentialsSource::UseUserCredentials.as_i64() as u32;
+        }
+        Transport::RDCleanPath(_) => {
+            compatibility.gateway_hostname.clear();
+            compatibility.gateway_username.clear();
+            compatibility.gateway_password.clear();
+            compatibility.gateway_domain.clear();
+            compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
+            compatibility.gateway_creds_source = GatewayCredentialsSource::UseServerCredentials.as_i64() as u32;
+        }
+        // Rejected by `active_x_transport_from_client_transport` before settings apply.
+        Transport::NamedPipe { .. } => {
+            unreachable!("NamedPipe must fail RPC connect before compatibility settings")
+        }
+        Transport::GatewayRpch(_) => {
+            unreachable!("GatewayRpch must fail RPC connect before compatibility settings")
+        }
+    }
+}
+
 fn should_prompt_for_credentials(server: &str, has_password: bool, prompt_for_credentials: bool) -> bool {
     prompt_for_credentials && !has_password && !server.trim().is_empty()
 }
@@ -11882,7 +11981,6 @@ impl Control {
         }
     }
 
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn rpc_connect(&self, properties: PropertySet, log_directive: Option<String>) -> ironrdp_agent::ipc::Response {
         if self.state.get() != ConnectionState::Disconnected {
             return ironrdp_agent::ipc::Response::typed_error(
@@ -12023,95 +12121,7 @@ impl Control {
                 .map(|bitmap| bitmap.color_depth)
                 .unwrap_or(32);
         }
-        {
-            let connector = config.connector();
-            let mut compatibility = self.compatibility.borrow_mut();
-            compatibility.enable_credssp = Some(connector.enable_credssp);
-            compatibility.enable_tls = Some(connector.enable_tls);
-            compatibility.compression = Some(connector.compression_type.is_some());
-            compatibility.bitmap_persistence = config.channels().egfx_persistent_cache.is_some();
-            compatibility.compression_level = connector.compression_type.map(|compression| match compression {
-                ironrdp_pdu::rdp::client_info::CompressionType::K8 => 0,
-                ironrdp_pdu::rdp::client_info::CompressionType::K64 => 1,
-                ironrdp_pdu::rdp::client_info::CompressionType::Rdp6 => 2,
-                ironrdp_pdu::rdp::client_info::CompressionType::Rdp61 => 3,
-            });
-            compatibility.redirect_clipboard = matches!(config.channels().clipboard, ClipboardType::Enable);
-            compatibility.redirect_webauthn = config.channels().webauthn;
-            compatibility.performance_flags = connector.performance_flags;
-            compatibility.keyboard_type = connector.keyboard_type;
-            compatibility.keyboard_subtype = connector.keyboard_subtype;
-            compatibility.keyboard_functional_keys_count = connector.keyboard_functional_keys_count;
-            compatibility.keyboard_layout = connector.keyboard_layout;
-            compatibility.network_connection_type = connector.connection_type;
-            compatibility.desktop_scale_factor = Some(connector.desktop_scale_factor);
-            compatibility.client_build = connector.client_build;
-            compatibility.client_dir = connector.client_dir.clone();
-            compatibility.client_name = Some(connector.client_name.clone());
-            compatibility.ime_file_name = connector.ime_file_name.clone();
-            compatibility.digital_product_id = connector.dig_product_id.clone();
-            compatibility.autologon = Some(connector.autologon);
-            compatibility.rdp_port = Some(config.destination().port());
-            compatibility.fake_events_interval_minutes = config
-                .fake_events_interval()
-                .map(|interval| u32::try_from(interval.as_secs() / 60).unwrap_or(u32::MAX));
-            compatibility.keep_alive_interval_seconds = config
-                .input_keepalive_interval()
-                .map(|interval| u32::try_from(interval.as_secs()).unwrap_or(u32::MAX))
-                .map(|seconds| i32::from_ne_bytes(seconds.to_ne_bytes()))
-                .unwrap_or(0);
-            compatibility.min_input_send_interval_ms = config
-                .input_send_interval()
-                .map(|interval| i32::try_from(interval.as_millis()).unwrap_or(i32::MAX))
-                .unwrap_or(DEFAULT_MIN_INPUT_SEND_INTERVAL_MS);
-            compatibility.audio_redirection_mode = if connector.enable_audio_playback { 0 } else { 2 };
-            compatibility.audio_capture_redirection_mode = if connector.enable_audio_capture {
-                VARIANT_TRUE.0
-            } else {
-                VARIANT_FALSE.0
-            };
-            compatibility.load_balance_info = config
-                .properties()
-                .get::<&str>("loadbalanceinfo")
-                .unwrap_or_default()
-                .to_owned();
-            compatibility.administrative_session = config.administrative_session();
-            compatibility.use_redirection_server_name = config.use_redirection_server_name();
-            compatibility.audio_quality_mode = config.audio_quality_mode();
-            compatibility.secured_start_program = connector.alternate_shell.clone();
-            compatibility.secured_work_dir = connector.work_dir.clone();
-            compatibility.authentication_level_set =
-                certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate;
-            compatibility.authentication_level = if compatibility.authentication_level_set { 0 } else { 1 };
-            match config.transport() {
-                Transport::Direct => {
-                    compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
-                }
-                Transport::Gateway(gateway) => {
-                    compatibility.gateway_hostname = gateway.endpoint.clone();
-                    compatibility.gateway_username = gateway.username.clone();
-                    compatibility.gateway_password = gateway.password.clone();
-                    compatibility.gateway_domain.clear();
-                    compatibility.gateway_usage_method = GatewayUsageMethod::UseAlways.as_i64() as u32;
-                    compatibility.gateway_creds_source = GatewayCredentialsSource::UseUserCredentials.as_i64() as u32;
-                }
-                Transport::RDCleanPath(_) => {
-                    compatibility.gateway_hostname.clear();
-                    compatibility.gateway_username.clear();
-                    compatibility.gateway_password.clear();
-                    compatibility.gateway_domain.clear();
-                    compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
-                    compatibility.gateway_creds_source = GatewayCredentialsSource::UseServerCredentials.as_i64() as u32;
-                }
-                // Rejected by `active_x_transport_from_client_transport` before settings apply.
-                Transport::NamedPipe { .. } => {
-                    unreachable!("NamedPipe must fail RPC connect before compatibility settings")
-                }
-                Transport::GatewayRpch(_) => {
-                    unreachable!("GatewayRpch must fail RPC connect before compatibility settings")
-                }
-            }
-        }
+        apply_rpc_config(&mut self.compatibility.borrow_mut(), &config, certificate_validation);
 
         *self.rpc_properties.borrow_mut() = Some(properties);
         *self.rpc_transport.borrow_mut() = Some(rpc_transport);
@@ -27738,5 +27748,35 @@ try {
         unsafe { shell.put_PublicMode(VARIANT_TRUE.0) }.expect("enable shell public mode");
         unsafe { shell.Launch() }.expect("launch in public mode");
         assert!(control.compatibility.borrow().public_mode);
+    }
+
+    // The .rdp audiomode and AudioRedirectionMode share their values, so a connect request reports the value it was given.
+    // oracle: spec IMsRdpClientAdvancedSettings5::AudioRedirectionMode (https://learn.microsoft.com/windows/win32/termserv/imsrdpclientadvancedsettings5-audioredirectionmode: 0 plays audio on the local computer, 1 on the remote computer, 2 not at all)
+    #[rstest::rstest]
+    #[case::client(0)]
+    #[case::server(1)]
+    #[case::disabled(2)]
+    fn rpc_config_reports_rdp_file_audio_mode(#[case] audiomode: i32) {
+        let mut properties = PropertySet::new();
+        properties.insert("full address", "rdp.example.test");
+        properties.insert("username", "user");
+        properties.insert("audiomode", i64::from(audiomode));
+        let config = ConfigBuilder::from_property_set(&properties)
+            .expect("valid properties")
+            .with_password("password")
+            .with_client_build(10_000)
+            .with_client_dir("C:\\")
+            .with_client_name("IronRDP ActiveX")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .build()
+            .expect("valid configuration");
+        let mut compatibility = CompatibilitySettings {
+            audio_redirection_mode: -1,
+            ..CompatibilitySettings::default()
+        };
+
+        apply_rpc_config(&mut compatibility, &config, CertificateValidation::Strict);
+
+        assert_eq!(compatibility.audio_redirection_mode, audiomode);
     }
 }

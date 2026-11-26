@@ -246,6 +246,12 @@ impl Config {
         self.remote_guard_mode = mode;
     }
 
+    #[cfg(all(feature = "__test", feature = "sound"))]
+    #[doc(hidden)]
+    pub fn __test_set_sound(&mut self, enabled: bool) {
+        self.channels.sound = enabled;
+    }
+
     /// Minimum interval between non-forced input batches.
     pub fn input_send_interval(&self) -> Option<Duration> {
         self.input_send_interval
@@ -1005,7 +1011,6 @@ pub struct ConfigBuilder {
     enable_server_pointer: Option<bool>,
     pointer_software_rendering: Option<bool>,
     performance_flags: Option<ironrdp_pdu::rdp::client_info::PerformanceFlags>,
-    enable_audio_playback: Option<bool>,
     audio_playback_mode: Option<ironrdp_connector::AudioPlaybackMode>,
     enable_audio_capture: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
@@ -1826,7 +1831,6 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_audio_mode(mut self, mode: ironrdp_cfg::AudioMode) -> Self {
         self.channels.sound = matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient);
-        self.enable_audio_playback = Some(matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient));
         self.audio_playback_mode = Some(audio_playback_mode(mode));
         self.properties.set_audio_mode(mode);
         self
@@ -2715,6 +2719,7 @@ impl ConfigBuilder {
             None
         };
 
+        let audio_playback_mode = self.audio_playback_mode.unwrap_or_default();
         let connector = ironrdp_connector::Config {
             credentials: ironrdp_connector::Credentials::UsernamePassword {
                 username: self.username.unwrap_or_default(),
@@ -2755,9 +2760,10 @@ impl ConfigBuilder {
             license_cache: None,
             enable_server_pointer: self.enable_server_pointer.unwrap_or(true),
             autologon: self.autologon.unwrap_or(false),
-            enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
+            // The legacy field mirrors the mode for consumers that still read it.
+            enable_audio_playback: audio_playback_mode == ironrdp_connector::AudioPlaybackMode::Client,
             enable_audio_capture: self.enable_audio_capture.unwrap_or(false),
-            audio_playback_mode: self.audio_playback_mode,
+            audio_playback_mode: Some(audio_playback_mode),
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
@@ -2880,7 +2886,7 @@ impl ConfigBuilder {
     pub fn with_property_set(mut self, ps: &PropertySet) -> anyhow::Result<Self> {
         #[cfg(feature = "gateway")]
         use ironrdp_cfg::GatewayUsageMethod;
-        use ironrdp_cfg::{AudioCaptureMode, AudioMode, TargetHost};
+        use ironrdp_cfg::{AudioCaptureMode, TargetHost};
 
         self.properties.merge(ps);
 
@@ -3029,31 +3035,12 @@ impl ConfigBuilder {
         if let Some(depth) = ps.color_depth() {
             self.color_depth = Some(depth);
         }
-        #[cfg(feature = "sound")]
-        match ps.audio_mode() {
-            Ok(Some(mode @ AudioMode::RedirectToClient)) => {
-                self.enable_audio_playback = Some(true);
-                self.audio_playback_mode = Some(audio_playback_mode(mode));
-                self.channels.sound = true;
+        if let Ok(Some(mode)) = ps.audio_mode() {
+            self.audio_playback_mode = Some(audio_playback_mode(mode));
+            #[cfg(feature = "sound")]
+            {
+                self.channels.sound = matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient);
             }
-            Ok(Some(mode @ (AudioMode::PlayOnServer | AudioMode::Disabled))) => {
-                self.enable_audio_playback = Some(false);
-                self.audio_playback_mode = Some(audio_playback_mode(mode));
-                self.channels.sound = false;
-            }
-            _ => {}
-        }
-        #[cfg(not(feature = "sound"))]
-        match ps.audio_mode() {
-            Ok(Some(mode @ (AudioMode::PlayOnServer | AudioMode::Disabled))) => {
-                self.enable_audio_playback = Some(false);
-                self.audio_playback_mode = Some(audio_playback_mode(mode));
-            }
-            Ok(Some(AudioMode::RedirectToClient)) => {
-                self.enable_audio_playback = Some(true);
-                self.audio_playback_mode = None;
-            }
-            _ => {}
         }
         #[cfg(feature = "sound")]
         match ps.audio_capture_mode() {
