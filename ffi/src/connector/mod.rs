@@ -1147,8 +1147,8 @@ mod tests {
         }
 
         let root = std::env::current_dir()?;
-        let name = format!("ffi-drive-test-{}-{test_name}", std::process::id());
-        let path = root.join(&name);
+        let file_name = format!("ffi-drive-test-{}-{test_name}", std::process::id());
+        let path = root.join(&file_name);
         let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
         let _file = TestFile(path.clone());
         drop(file);
@@ -1235,7 +1235,7 @@ mod tests {
                 shared_access: SharedAccess::FILE_SHARE_READ | SharedAccess::FILE_SHARE_WRITE,
                 create_disposition: CreateDisposition::FILE_OPEN,
                 create_options: CreateOptions::empty(),
-                path: format!("\\{name}"),
+                path: format!("\\{file_name}"),
             };
             let mut encoded = encode_vec(&RdpdrPdu::DeviceIoRequest(request.device_io_request.clone()))?;
             encoded.resize(4 + request.size(), 0);
