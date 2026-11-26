@@ -4,8 +4,9 @@ Start a work session with `/contribute`, which picks the delivery flow by scale 
 
 `INTENT*.md` and `*.intent*.md` files contain human-owned intent for the software.
 Read all applicable intent files before modifying code.
-Do not create, modify, or delete intent files.
-If a requested change conflicts with intent, stop and surface the conflict for human resolution.
+Write to an intent file only text the human approved verbatim, including where it goes; when asked to apply approved text, apply it exactly, since the approval is the authorization.
+Any other change, including rewording, tidying, adding, removing or moving a sentence or anchor, needs the human's explicit approval of the exact result first.
+If a requested change conflicts with intent, stop and surface the conflict for human resolution; never edit intent to fit the code.
 
 ## Writing for the repository
 
