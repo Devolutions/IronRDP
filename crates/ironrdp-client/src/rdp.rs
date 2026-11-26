@@ -2457,7 +2457,10 @@ impl ironrdp_dvc::DvcChannelListener for DvcPipeProxyListener {
     clippy::too_many_arguments,
     reason = "the connector combines independent channel factories, carrier capabilities, and reconnect state"
 )]
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
+#[expect(
+    deprecated,
+    reason = "runtime sound overrides still write the legacy field, which has no effect once `audio_playback_mode` is set"
+)]
 fn build_connector(
     config: &Config,
     client_addr: SocketAddr,
