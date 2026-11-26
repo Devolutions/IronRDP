@@ -1131,6 +1131,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(windows)]
     fn negotiate_drive_and_smartcard_capabilities(
         rdpdr: &mut ironrdp::rdpdr::Rdpdr,
     ) -> Result<(), Box<dyn core::error::Error>> {
@@ -1158,27 +1159,6 @@ mod tests {
         assert!(response.capabilities.contains(&CapabilityMessage::new_drive()));
         assert!(response.capabilities.contains(&CapabilityMessage::new_smartcard()));
         Ok(())
-    }
-
-    // oracle: spec MS-RDPEFS §3.2.5.1.7, §3.2.5.1.8
-    #[test]
-    fn drive_and_smartcard_capabilities_are_exchanged() -> Result<(), Box<dyn core::error::Error>> {
-        use ironrdp::rdpdr::pdu::RdpdrPdu;
-        use ironrdp::rdpdr::pdu::efs::{VersionAndIdPdu, VersionAndIdPduKind};
-        use ironrdp::svc::SvcProcessor as _;
-        use ironrdp_core::encode_vec;
-
-        let mut rdpdr = ironrdp::rdpdr::Rdpdr::new(Box::new(ironrdp::rdpdr::NoopRdpdrBackend), "client".to_owned())
-            .with_drives(Some(vec![(1, "Shared".to_owned())]))
-            .with_smartcard(42);
-        let announce = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
-            version_major: 1,
-            version_minor: 12,
-            client_id: 0x1234,
-            kind: VersionAndIdPduKind::ServerAnnounceRequest,
-        });
-        rdpdr.process(&encode_vec(&announce)?)?;
-        negotiate_drive_and_smartcard_capabilities(&mut rdpdr)
     }
 
     #[cfg(windows)]

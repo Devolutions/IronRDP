@@ -1317,6 +1317,34 @@ fn core_capability_decodes_both_server_and_client_packet_ids() {
     assert_eq!(decoded.capabilities.len(), 1);
 }
 
+// oracle: spec MS-RDPEFS §3.2.5.1.7, §3.2.5.1.8
+#[test]
+fn client_with_drives_and_smartcard_returns_both_capabilities() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
+        .with_drives(Some(vec![(1, "Shared".to_owned())]))
+        .with_smartcard(42);
+    announce_client_id(&mut rdpdr, 12);
+    let server_capabilities = RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![
+            CapabilityMessage::new_general(1),
+            CapabilityMessage::new_drive(),
+            CapabilityMessage::new_smartcard(),
+        ],
+        kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+    });
+
+    let responses = rdpdr.process(&encode_vec(&server_capabilities).unwrap()).unwrap();
+
+    assert_eq!(responses.len(), 1);
+    let response = responses[0].encode_unframed_pdu().unwrap();
+    let RdpdrPdu::CoreCapability(response) = ironrdp_core::decode::<RdpdrPdu>(&response).unwrap() else {
+        panic!("expected client core capability response");
+    };
+    assert_eq!(response.kind, CoreCapabilityKind::ClientCoreCapabilityResponse);
+    assert!(response.capabilities.contains(&CapabilityMessage::new_drive()));
+    assert!(response.capabilities.contains(&CapabilityMessage::new_smartcard()));
+}
+
 #[test]
 fn client_device_list_announce_round_trips() {
     let original = ClientDeviceListAnnounce {
