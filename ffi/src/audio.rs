@@ -1,6 +1,6 @@
 #[cfg(not(target_os = "android"))]
 mod native {
-    use super::{AudioChannelKind, audio_channel_kind, has_audio_channel, set_client_playback};
+    use super::{AudioChannelKind, audio_channel_kind, has_audio_channel};
     use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
     use core::time::Duration;
     use std::borrow::Cow;
@@ -140,6 +140,7 @@ mod native {
             Ok(message)
         }
 
+        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         pub(crate) fn attach(
             self: &Arc<Self>,
             connector: &mut ironrdp::connector::ClientConnector,
@@ -193,7 +194,7 @@ mod native {
             }
 
             connector.config.enable_audio_capture = self.capture || capture_dvc;
-            set_client_playback(&mut connector.config, self.playback || playback_type || playback_dvc);
+            connector.config.enable_audio_playback = self.playback || playback_type || playback_dvc;
             if self.playback {
                 if compatibility_rdpsnd {
                     connector
@@ -1014,15 +1015,13 @@ mod native {
 
         // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602557
         #[test]
+        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         fn capture_only_disables_playback_advertisement() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
             let mut connector = connector();
             audio.0.attach(&mut connector, false).expect("attach native capture");
 
-            assert_eq!(
-                connector.config.audio_playback_mode(),
-                ironrdp::connector::AudioPlaybackMode::Disabled
-            );
+            assert!(!connector.config.enable_audio_playback);
         }
 
         // oracle: spec MS-RDPEA §3.2.5.2.1.6
@@ -1705,21 +1704,6 @@ pub(crate) fn audio_channel_kind(channel_name: &str) -> Option<AudioChannelKind>
     [AudioChannelKind::Playback, AudioChannelKind::Capture]
         .into_iter()
         .find(|kind| kind.channel_names().contains(&channel_name))
-}
-
-/// Advertises playback to the client when a playback channel is attached, and no playback otherwise.
-///
-/// Playing on the server needs no client channel, so that mode is kept.
-pub(crate) fn set_client_playback(config: &mut ironrdp::connector::Config, attached: bool) {
-    use ironrdp::connector::AudioPlaybackMode;
-
-    if config.audio_playback_mode() != AudioPlaybackMode::Server {
-        config.audio_playback_mode = Some(if attached {
-            AudioPlaybackMode::Client
-        } else {
-            AudioPlaybackMode::Disabled
-        });
-    }
 }
 
 #[diplomat::bridge]
