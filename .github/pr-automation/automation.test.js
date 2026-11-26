@@ -6523,7 +6523,9 @@ test("automatic admission neutralizes a claim when post-validation observes a dr
 });
 
 // The check-run listing can trail `checks.create` by seconds while the pull request is unchanged.
-const claimReviewWithListingLag = async ({ hiddenListings, listingRetries, listingError }) => {
+const claimReviewWithListingLag = async ({
+  hiddenListings, listingRetries, listingError, updateError,
+}) => {
   const runs = [];
   const updates = [];
   const sleeps = [];
@@ -6558,7 +6560,10 @@ const claimReviewWithListingLag = async ({ hiddenListings, listingRetries, listi
           runs.push(claim);
           return { data: claim };
         },
-        update: async (payload) => updates.push(payload),
+        update: async (payload) => {
+          if (updateError) throw updateError;
+          updates.push(payload);
+        },
       },
       actions: {
         getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }),
@@ -6610,6 +6615,17 @@ test("automatic review admission neutralizes its claim when the post-claim reche
   assert.equal(error, listingError);
   assert.deepEqual(updates.map(({ check_run_id, conclusion }) => ({ check_run_id, conclusion })),
     [{ check_run_id: 19, conclusion: "neutral" }]);
+});
+
+test("automatic review admission reports both errors when its claim cannot be superseded", async () => {
+  const listingError = new Error("listing unavailable");
+  const updateError = new Error("update unavailable");
+  const { error } = await claimReviewWithListingLag({
+    hiddenListings: 0, listingRetries: 3, listingError, updateError,
+  });
+  assert.ok(error instanceof AggregateError);
+  assert.match(error.message, /lease claim 19 /);
+  assert.deepEqual(error.errors, [listingError, updateError]);
 });
 
 test("automatic leases rerun after terminal or missing owners and fail closed on malformed claims", async () => {

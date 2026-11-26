@@ -135,7 +135,12 @@ async function claimAutomaticLease({
     }
   } catch (error) {
     // A failed recheck leaves no owner, so the claim must not stay in progress.
-    await supersede().catch(() => {});
+    try {
+      await supersede();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError],
+        `lease claim ${claim.id} could not be superseded after its recheck failed`);
+    }
     throw error;
   }
   if (reason) {

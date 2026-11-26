@@ -261,6 +261,10 @@ jobs:
               return;
             }
             const { claimAutomaticLease } = require("./.github/pr-automation/automation-lease");
+            const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
+            retryTransientRequests(github, {
+              onRetry: (retry) => core.warning(JSON.stringify({ event: "pr-automation.github-retry", ...retry })),
+            });
             const decision = await claimAutomaticLease({
               github, owner: context.repo.owner, repo: context.repo.repo,
               kind: "classification", headSha: process.env.HEAD_SHA,
@@ -800,6 +804,10 @@ jobs:
               return;
             }
             const { claimAutomaticLease } = require("./.github/pr-automation/automation-lease");
+            const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
+            retryTransientRequests(github, {
+              onRetry: (retry) => core.warning(JSON.stringify({ event: "pr-automation.github-retry", ...retry })),
+            });
             const gate = JSON.parse(process.env.GATE || "{}");
             const decision = await claimAutomaticLease({
               github, owner: context.repo.owner, repo: context.repo.repo,
