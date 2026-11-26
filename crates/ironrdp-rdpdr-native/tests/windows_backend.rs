@@ -190,6 +190,55 @@ fn read_only_drives_allow_reads_and_reject_mutations() {
     );
 }
 
+// oracle: regression Devolutions/IronRDP#2541
+#[test]
+fn issue_2541_read_only_drive_does_not_create_a_missing_root() {
+    let fixture = Fixture::new();
+    let missing_root = fixture.root.join("missing-root");
+
+    let status = open_root_with_open_if(&missing_root, true);
+
+    assert_ne!(status, NtStatus::SUCCESS);
+    assert!(!missing_root.exists());
+}
+
+// oracle: mutant root downgrade narrowed to read-only drives
+#[test]
+fn writable_drive_does_not_create_a_missing_root() {
+    let fixture = Fixture::new();
+    let missing_root = fixture.root.join("missing-root");
+
+    let status = open_root_with_open_if(&missing_root, false);
+
+    assert_ne!(status, NtStatus::SUCCESS);
+    assert!(!missing_root.exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.1.2
+#[test]
+fn existing_root_opens_with_open_if() {
+    let fixture = Fixture::new();
+
+    let status = open_root_with_open_if(&fixture.root, false);
+
+    assert_eq!(status, NtStatus::SUCCESS);
+}
+
+fn open_root_with_open_if(root_path: &std::path::Path, read_only: bool) -> NtStatus {
+    let mut backend = WindowsRdpdrBackendFactory::new(
+        RedirectedDrive::new(1, "Test", root_path, read_only).expect("valid test drive"),
+    )
+    .build();
+    activate(&mut backend);
+
+    let mut open_root = directory_create_request(r"\");
+    open_root.create_disposition = CreateDisposition::FILE_OPEN_IF;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(open_root))
+        .expect("complete root open");
+    response_status(&response)
+}
+
 #[test]
 fn static_io_limit_is_inclusive() {
     let fixture = Fixture::new();

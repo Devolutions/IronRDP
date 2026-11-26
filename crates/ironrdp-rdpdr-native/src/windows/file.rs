@@ -226,12 +226,19 @@ pub(super) fn create_inner(
     // MSTSC's compatibility access without granting data, write, or security
     // permissions the server did not request.
     let desired_access = req.desired_access.bits() | SYNCHRONIZE | FILE_READ_ATTRIBUTES;
+    // A missing root would be created in its parent directory, which lies outside the redirected drive.
+    // INVARIANT: the root is only ever opened, never created, whatever the drive's write mode.
+    let create_disposition = u32::from(if is_root {
+        CreateDisposition::FILE_OPEN
+    } else {
+        req.create_disposition
+    });
     let options = FileOpenOptions {
         desired_access,
         allocation_size: (req.allocation_size != 0).then_some(allocation_size),
         file_attributes: req.file_attributes.bits(),
         share_access: req.shared_access.bits(),
-        create_disposition: u32::from(req.create_disposition),
+        create_disposition,
         // A remote server must not be able to use this hint to exercise the
         // local process's backup or restore privileges during ACL evaluation.
         create_options: (req.create_options.bits() & !FILE_OPEN_FOR_BACKUP_INTENT) | FILE_SYNCHRONOUS_IO_NONALERT,
