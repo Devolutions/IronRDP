@@ -6886,7 +6886,7 @@ test("a leaseless review failure leaves another live run's claim alone", async (
     app: { slug: "github-actions" },
     output: { summary: leaseMarker({ kind: "review", headSha: SHA, runId: 8, attempt: 1 }) },
   };
-  const write = async (ownerStatus) => {
+  const write = async (ownerStatus, runId = 7) => {
     const mutations = [];
     const github = {
       paginate: { iterator: async function* () { yield { data: [claim] }; } },
@@ -6909,7 +6909,7 @@ test("a leaseless review failure leaves another live run's claim alone", async (
     };
     const result = await writeState({
       github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
-      botLogin: "github-actions[bot]",
+      botLogin: "github-actions[bot]", runId,
       state: {
         ok: true, mode: "review", expectedSha: SHA, forced: false, failed: true,
         reason: "review admission failed",
@@ -6928,6 +6928,10 @@ test("a leaseless review failure leaves another live run's claim alone", async (
   const finished = await write("completed");
   assert.notEqual(finished.result.superseded, true);
   assert.ok(finished.mutations.some(([kind]) => kind === "update"));
+  // The claim belongs to this run when superseding it failed during admission.
+  const own = await write("in_progress", 8);
+  assert.notEqual(own.result.superseded, true);
+  assert.ok(own.mutations.some(([kind, payload]) => kind === "update" && payload.check_run_id === 20));
 });
 
 test("failed explicit retry neutralizes its lease without downgrading prior success", async () => {

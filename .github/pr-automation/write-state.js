@@ -381,6 +381,7 @@ async function completeLeaseNeutral(github, owner, repo, state, canMutate, title
 
 async function writeState({
   github, owner, repo, prNumber, state, botLogin, reviewRequested = false, ciRetry = {},
+  runId,
 }) {
   if (!state?.ok || !["classification", "review"].includes(state.mode) ||
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
@@ -478,10 +479,12 @@ async function writeState({
       return { ok: true, superseded: true };
     }
     // A failed admission reports without a lease; it must not mark another live run's claim.
+    // Its own claim, left in progress when superseding failed, is still this run's to complete.
     if (state.forced !== true && !state.lease && nonSuccess) {
       for (const run of checks.filter((run) => run.status === "in_progress")) {
         const lease = parseLeaseMarker(run.output?.summary);
-        if (lease && await ownerIsActive(github, { ...lease, owner, repo })) {
+        if (lease && lease.runId !== runId &&
+            await ownerIsActive(github, { ...lease, owner, repo })) {
           return { ok: true, superseded: true };
         }
       }
