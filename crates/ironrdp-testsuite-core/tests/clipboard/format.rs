@@ -154,8 +154,8 @@ fn html_failure() {
     assert!(cf_html_to_plain_html(b"StartFragment:999\r\nEndFragment:9999\r\n<html>nopers</html>").is_err());
 }
 
-/// `CF_HTML` the way the Windows 11 Photos app writes it with each copied image:
-/// `<!--StartFragment -->` / `<!--EndFragment -->`, with a space before `-->`.
+/// `CF_HTML` the way the Windows 11 Photos app writes it with each copied image.
+/// Its markers are `<!--StartFragment -->` and `<!--EndFragment -->`, with a space before `-->`.
 fn photos_cf_html(start_marker: &str, end_marker: &str) -> Vec<u8> {
     let fragment = "<p><img src=\"file:///C:/Users/user/Pictures/photo.jpg\"></p>";
     let before = format!("<!DOCTYPE><HTML><HEAD></HEAD><BODY>{start_marker}");
@@ -170,7 +170,7 @@ fn photos_cf_html(start_marker: &str, end_marker: &str) -> Vec<u8> {
         "Version:1.0\r\nStartHTML:{header_len:08}\r\nEndHTML:{end_html:08}\r\nStartFragment:{start_fragment:08}\r\nEndFragment:{end_fragment:08}\r\n{before}{fragment}{after}"
     )
     .into_bytes();
-    out.push(0); // the clipboard data is null-terminated
+    out.push(0); // The clipboard data is null-terminated.
     out
 }
 

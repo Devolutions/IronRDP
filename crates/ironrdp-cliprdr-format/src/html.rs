@@ -170,8 +170,8 @@ fn parse_cf_html(input: &[u8]) -> Result<CfHtml<'_>, HtmlError> {
         Ok(next)
     }
 
-    // The fragment sits between `<!--StartFragment-->` and `<!--EndFragment-->`. Some Windows
-    // writers (the Windows 11 Photos app) put a space before `-->`, so whitespace there is accepted.
+    // The fragment sits between `<!--StartFragment-->` and `<!--EndFragment-->`.
+    // Some Windows writers (the Windows 11 Photos app) put a space before `-->`, so whitespace there is accepted.
 
     /// Start of the start marker that ends exactly at `start_fragment`.
     fn start_fragment_marker(input: &[u8], start_fragment: usize) -> Option<usize> {
