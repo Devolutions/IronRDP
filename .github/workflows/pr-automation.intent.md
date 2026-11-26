@@ -4,10 +4,13 @@ Automatic classification and review use their canonical check run as a bounded o
 The marker contains only `v1`, the work kind, the exact head SHA, and the workflow run ID and attempt.
 An active owner blocks queued or concurrent duplicate provider work, while a terminal, canceled, or missing owner permits a new claim.
 The owner is the workflow run, so a later attempt of the same run, such as a rerun of failed jobs, continues the lease.
+Admission waits for its own claim to appear in the check-run listing before trusting ownership read from it, and fails visibly if the listing never catches up, so a rerun of the failed jobs can retry.
 This intentionally provides at-least-once model execution rather than artifact recovery, receipts, a transaction ledger, or lifecycle reconciliation.
 The final writer verifies its ownership again, and canonical success remains absorbing for the same head.
+A failed admission reports its failure without a lease, after superseding its own claim, and skips the report while another live run holds a claim for the head.
+That guard is best-effort under check-run listing lag; a concurrent successful review corrects any stale failure state because canonical success remains absorbing.
 Rare partial publication failures require manual repair rather than recovery automation.
-The final writer retries transient GitHub server errors with bounded backoff only for requests whose repetition cannot duplicate a comment, review, check, or dispatch.
+The admission claims and the final writer retry transient GitHub server errors with bounded backoff only for requests whose repetition cannot duplicate a comment, review, check, or dispatch.
 
 The Helmcode key permits at most 25 parallel requests.
 

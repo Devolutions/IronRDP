@@ -9,7 +9,8 @@ const {
 } = require("./review-render");
 const { reviewPolicyEligible } = require("./routing");
 const {
-  hasCurrentClassification, ownsActiveLease, parseLeaseMarker, recheckAutomaticReview,
+  hasCurrentClassification, ownerIsActive, ownsActiveLease, parseLeaseMarker,
+  recheckAutomaticReview,
 } = require("./automation-lease");
 const {
   assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHeadNow,
@@ -380,6 +381,7 @@ async function completeLeaseNeutral(github, owner, repo, state, canMutate, title
 
 async function writeState({
   github, owner, repo, prNumber, state, botLogin, reviewRequested = false, ciRetry = {},
+  runId,
 }) {
   if (!state?.ok || !["classification", "review"].includes(state.mode) ||
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
@@ -475,6 +477,21 @@ async function writeState({
         checks.some((run) => run.status === "in_progress" &&
           parseLeaseMarker(run.output?.summary))) {
       return { ok: true, superseded: true };
+    }
+    // A failed admission reports without a lease; it must not mark another live run's claim.
+    // Its own claim, left in progress when superseding failed, is still this run's to complete.
+    if (state.mode === "review" && state.forced !== true && !state.lease && nonSuccess) {
+      // Without the writer's run, its own stranded claim would look foreign and stay in progress.
+      if (!Number.isSafeInteger(runId) || runId <= 0) {
+        throw new Error("a leaseless failure report requires the writer's run ID");
+      }
+      for (const run of checks.filter((run) => run.status !== "completed")) {
+        const lease = parseLeaseMarker(run.output?.summary);
+        if (lease && lease.runId !== runId &&
+            await ownerIsActive(github, { ...lease, owner, repo })) {
+          return { ok: true, superseded: true };
+        }
+      }
     }
     if (state.forced === true && !nonSuccess) {
       const automatic = checks.filter((run) => {

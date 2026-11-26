@@ -261,6 +261,8 @@ jobs:
               return;
             }
             const { claimAutomaticLease } = require("./.github/pr-automation/automation-lease");
+            const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
+            retryTransientRequests(github, { warn: (message) => core.warning(message) });
             const decision = await claimAutomaticLease({
               github, owner: context.repo.owner, repo: context.repo.repo,
               kind: "classification", headSha: process.env.HEAD_SHA,
@@ -800,6 +802,8 @@ jobs:
               return;
             }
             const { claimAutomaticLease } = require("./.github/pr-automation/automation-lease");
+            const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
+            retryTransientRequests(github, { warn: (message) => core.warning(message) });
             const gate = JSON.parse(process.env.GATE || "{}");
             const decision = await claimAutomaticLease({
               github, owner: context.repo.owner, repo: context.repo.repo,
@@ -854,6 +858,7 @@ jobs:
       needs.resolve-pr.outputs.review-route == 'true' &&
       (needs.resolve-pr.outputs.force == 'true' ||
       needs.review-admission.outputs.owner == 'true' ||
+      needs.review-admission.result == 'failure' ||
       needs.review-gate.outputs.eligible != 'true')
     runs-on: ubuntu-latest
     permissions:
@@ -884,6 +889,7 @@ jobs:
           FORK_RATE_LIMIT_RESULT: ${{ needs.fork-rate-limit.result }}
           REVIEWER_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
           REVIEW_PIPELINE_RESULT: ${{ needs.review-pipeline.result }}
+          REVIEW_ADMISSION_RESULT: ${{ needs.review-admission.result }}
           SUPERSEDED: ${{ needs.review-pipeline.outputs.superseded }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
@@ -937,11 +943,17 @@ jobs:
                : [];
              const failureReasons = report.stages.filter((stage) => stage.status === "failed")
                .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
-             const reviewerReason = !artifactsAgree
-               ? "review artifacts disagree"
-               : report.status === "failed"
-                 ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
-                 : process.env.REVIEWER_REASON;
+             // A failed admission supersedes its claim and has no owner left to report the failure.
+             const admissionFailed = !force && process.env.REVIEW_ADMISSION_RESULT === "failure";
+             let reviewerReason = process.env.REVIEWER_REASON;
+             if (admissionFailed) {
+               reviewerReason = "review admission failed";
+             } else if (!artifactsAgree) {
+               reviewerReason = "review artifacts disagree";
+             } else if (report.status === "failed") {
+               reviewerReason = failureReasons.join("; ") || process.env.REVIEWER_REASON ||
+                 "review pipeline failed";
+             }
              const revalidated = artifactsAgree && report.status === "success" && persisted
                ? validateFinalReview(persisted.raw_output, {
                  expectedSha: process.env.HEAD_SHA,
@@ -974,7 +986,8 @@ jobs:
                reviewerValidationContext: validationContext,
                specialistAggregate,
                requireReviewerContext: true,
-               reviewAttempted: ["success", "failure"].includes(process.env.REVIEW_PIPELINE_RESULT),
+               reviewAttempted: admissionFailed ||
+                 ["success", "failure"].includes(process.env.REVIEW_PIPELINE_RESULT),
              });
              if (!force && !state.superseded) state.lease = lease;
              core.info(JSON.stringify({
@@ -986,12 +999,14 @@ jobs:
                },
              }));
              if (process.env.REVIEW_PIPELINE_RESULT === "skipped") {
-               const reasons = reviewSkipReasons({
-                 gate,
-                 gateResult: process.env.REVIEW_GATE_RESULT,
-                 rateLimit: parse(process.env.FORK_RATE_LIMIT, null),
-                 rateLimitResult: process.env.FORK_RATE_LIMIT_RESULT,
-               });
+               const reasons = admissionFailed
+                 ? ["Review admission failed before the review started; rerun the failed jobs to retry it."]
+                 : reviewSkipReasons({
+                   gate,
+                   gateResult: process.env.REVIEW_GATE_RESULT,
+                   rateLimit: parse(process.env.FORK_RATE_LIMIT, null),
+                   rateLimitResult: process.env.FORK_RATE_LIMIT_RESULT,
+                 });
                await core.summary
                  .addHeading("Automated review skipped")
                  .addRaw("The automated review did not run because:", true)
@@ -1070,9 +1085,7 @@ jobs:
             const { StaleHeadError } = require("./.github/pr-automation/current-head");
             const { reconcileLifecycle } = require("./.github/pr-automation/lifecycle");
             const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
-            retryTransientRequests(github, {
-              onRetry: (retry) => core.warning(JSON.stringify({ event: "pr-automation.github-retry", ...retry })),
-            });
+            retryTransientRequests(github, { warn: (message) => core.warning(message) });
             const parse = (value) => { try { return JSON.parse(value || ""); } catch { return null; } };
             const readState = (file) => {
               try { return parse(fs.readFileSync(file, "utf8")); } catch { return null; }
@@ -1097,6 +1110,7 @@ jobs:
                   prNumber: Number(process.env.PULL_REQUEST_NUMBER), state,
                   botLogin: "github-actions[bot]",
                   reviewRequested: process.env.REVIEW_REQUESTED === "true",
+                  runId: context.runId,
                 });
               }
             } catch (error) {
