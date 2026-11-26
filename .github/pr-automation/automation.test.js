@@ -899,6 +899,27 @@ test("the embedded writer script catches a current-head stale error", async () =
   assert.deepEqual(hooks, ["request"]);
 });
 
+test("transient retries log one shared warning event", async () => {
+  let wrapper;
+  const warnings = [];
+  retryTransientRequests({ hook: { wrap: (name, fn) => { wrapper = fn; } } }, {
+    sleep: async () => {}, warn: (message) => warnings.push(message),
+  });
+  let calls = 0;
+  const options = { method: "GET", url: "/repos/{owner}/{repo}/pulls/{pull_number}" };
+  await wrapper(async () => {
+    calls += 1;
+    if (calls === 1) throw Object.assign(new Error("bad gateway"), { status: 502 });
+    return { status: 200 };
+  }, options);
+  assert.deepEqual(warnings.map((warning) => JSON.parse(warning)), [{
+    event: "pr-automation.github-retry", ...options, status: 502, attempt: 1, delayMs: 1000,
+  }]);
+  const workflow = readWorkflow();
+  assert.equal(workflow.match(/retryTransientRequests\(github, \{ warn: \(message\) => core\.warning\(message\) \}\)/g)?.length, 3);
+  assert.doesNotMatch(workflow, /pr-automation\.github-retry/);
+});
+
 test("the writer retries transient GitHub errors only for idempotent requests", async () => {
   const transient = (status = 500) => Object.assign(
     new Error("Unexpected end of JSON input"), { name: "HttpError", status });

@@ -262,9 +262,7 @@ jobs:
             }
             const { claimAutomaticLease } = require("./.github/pr-automation/automation-lease");
             const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
-            retryTransientRequests(github, {
-              onRetry: (retry) => core.warning(JSON.stringify({ event: "pr-automation.github-retry", ...retry })),
-            });
+            retryTransientRequests(github, { warn: (message) => core.warning(message) });
             const decision = await claimAutomaticLease({
               github, owner: context.repo.owner, repo: context.repo.repo,
               kind: "classification", headSha: process.env.HEAD_SHA,
@@ -805,9 +803,7 @@ jobs:
             }
             const { claimAutomaticLease } = require("./.github/pr-automation/automation-lease");
             const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
-            retryTransientRequests(github, {
-              onRetry: (retry) => core.warning(JSON.stringify({ event: "pr-automation.github-retry", ...retry })),
-            });
+            retryTransientRequests(github, { warn: (message) => core.warning(message) });
             const gate = JSON.parse(process.env.GATE || "{}");
             const decision = await claimAutomaticLease({
               github, owner: context.repo.owner, repo: context.repo.repo,
@@ -949,13 +945,15 @@ jobs:
                .map((stage) => `${stage.id}: ${stage.reason || stage.category}`);
              // A failed admission supersedes its claim and has no owner left to report the failure.
              const admissionFailed = !force && process.env.REVIEW_ADMISSION_RESULT === "failure";
-             const reviewerReason = admissionFailed
-               ? "review admission failed"
-               : !artifactsAgree
-                 ? "review artifacts disagree"
-                 : report.status === "failed"
-                   ? failureReasons.join("; ") || process.env.REVIEWER_REASON || "review pipeline failed"
-                   : process.env.REVIEWER_REASON;
+             let reviewerReason = process.env.REVIEWER_REASON;
+             if (admissionFailed) {
+               reviewerReason = "review admission failed";
+             } else if (!artifactsAgree) {
+               reviewerReason = "review artifacts disagree";
+             } else if (report.status === "failed") {
+               reviewerReason = failureReasons.join("; ") || process.env.REVIEWER_REASON ||
+                 "review pipeline failed";
+             }
              const revalidated = artifactsAgree && report.status === "success" && persisted
                ? validateFinalReview(persisted.raw_output, {
                  expectedSha: process.env.HEAD_SHA,
@@ -1087,9 +1085,7 @@ jobs:
             const { StaleHeadError } = require("./.github/pr-automation/current-head");
             const { reconcileLifecycle } = require("./.github/pr-automation/lifecycle");
             const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
-            retryTransientRequests(github, {
-              onRetry: (retry) => core.warning(JSON.stringify({ event: "pr-automation.github-retry", ...retry })),
-            });
+            retryTransientRequests(github, { warn: (message) => core.warning(message) });
             const parse = (value) => { try { return JSON.parse(value || ""); } catch { return null; } };
             const readState = (file) => {
               try { return parse(fs.readFileSync(file, "utf8")); } catch { return null; }
