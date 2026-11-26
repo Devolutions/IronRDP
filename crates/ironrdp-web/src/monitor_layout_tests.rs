@@ -67,6 +67,7 @@ async fn callback_receives_initial_changed_and_reactivated_layouts() {
     // oracle: reference crates/ironrdp-client/src/rdp.rs forwards layouts at these three session events.
     // oracle: spec MS-RDPBCGR §2.2.1.3.6.1 defines the coordinate order and flags.
     // oracle: regression #217 preserves unknown flag bits.
+    // oracle: reference crates/ironrdp-client/src/rdp.rs seeds the session's framed reader with the connection's leftover.
     let fixture = js_sys::Function::new_no_args(
         r#"
         const previousContext = globalThis.CanvasRenderingContext2D;
@@ -106,7 +107,7 @@ async fn callback_receives_initial_changed_and_reactivated_layouts() {
     let initial = vec![monitor(0, 0, 799, 599, 1), monitor(-800, 0, -1, 599, 0)];
     let changed = vec![monitor(0, 0, 1023, 767, 1)];
     let reactivated = vec![monitor(0, 0, 639, 479, 1), monitor(640, -100, 1279, 379, 0x8000_0000)];
-    let frames = [
+    let [leftover, frames @ ..] = [
         server_data(ShareDataPdu::MonitorLayout(MonitorLayoutPdu { monitors: changed })),
         server_frame(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll)),
         server_frame(ShareControlPdu::ServerDemandActive(ServerDemandActive {
@@ -167,7 +168,8 @@ async fn callback_receives_initial_changed_and_reactivated_layouts() {
         camera: None,
         monitor_layout_callback: Some(callback),
         input_events_rx: RefCell::new(Some(input_events_rx)),
-        rdp_reader: RefCell::new(Some(reader)),
+        // The connection sequence already read the first frame, so the session must read it before the socket.
+        rdp_reader: RefCell::new(Some((reader, BytesMut::from(leftover.as_slice())))),
         clipboard: RefCell::new(Some(None)),
         printer: RefCell::new(Some(None)),
         connection_result: RefCell::new(Some(connector::ConnectionResult {
