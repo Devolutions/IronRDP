@@ -2,17 +2,15 @@ use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 
 use self::ffi::PerformanceFlagsType;
 
-#[cfg_attr(
-    not(windows),
-    expect(dead_code, reason = "redirected-drive settings are consumed only by Windows builds")
-)]
-#[derive(Clone)]
-pub(crate) struct RedirectedDriveConfig {
-    pub(crate) device_id: u32,
-    pub(crate) display_name: String,
-    pub(crate) root_path: String,
-    pub(crate) read_only: bool,
-}
+/// A drive that `add_redirected_drive` has validated, stored as built so nothing validates it again.
+#[cfg(windows)]
+pub(crate) type RedirectedDrive = ironrdp_rdpdr_native::RedirectedDrive;
+
+/// Drive redirection is Windows-only, so this type has no values.
+///
+/// INVARIANT: Every drive list with this element type is empty by construction.
+#[cfg(not(windows))]
+pub(crate) type RedirectedDrive = core::convert::Infallible;
 
 #[cfg(any(windows, test))]
 /// Returns the drive name as announced in DeviceData, without a trailing colon and uppercased, for duplicate detection.
@@ -83,7 +81,7 @@ pub mod ffi {
         pub(crate) connector: ironrdp::connector::Config,
         pub(crate) dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
         pub(crate) direct_dvc: Option<DirectDvcConfig>,
-        pub(crate) redirected_drives: Vec<super::RedirectedDriveConfig>,
+        pub(crate) redirected_drives: Vec<super::RedirectedDrive>,
     }
 
     impl Config {
@@ -133,7 +131,7 @@ pub mod ffi {
         pub timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>,
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
         pub direct_dvc: Option<DirectDvcConfig>,
-        redirected_drives: Vec<super::RedirectedDriveConfig>,
+        redirected_drives: Vec<super::RedirectedDrive>,
         /// Sanitized names of `redirected_drives`, kept so each addition checks for collisions without re-deriving them.
         #[cfg(windows)]
         redirected_drive_wire_names: Vec<String>,
@@ -319,7 +317,7 @@ pub mod ffi {
                 }
                 let device_id =
                     u32::try_from(self.redirected_drives.len() + 1).map_err(|_| "too many redirected drives")?;
-                ironrdp_rdpdr_native::RedirectedDrive::new(
+                let drive = super::RedirectedDrive::new(
                     device_id,
                     display_name.to_owned(),
                     std::path::PathBuf::from(root_path),
@@ -328,12 +326,7 @@ pub mod ffi {
                 .map_err(|error| {
                     crate::error::GenericError(anyhow::Error::new(error).context("invalid redirected drive"))
                 })?;
-                self.redirected_drives.push(super::RedirectedDriveConfig {
-                    device_id,
-                    display_name: display_name.to_owned(),
-                    root_path: root_path.to_owned(),
-                    read_only,
-                });
+                self.redirected_drives.push(drive);
                 self.redirected_drive_wire_names.push(wire_name);
                 Ok(())
             }
@@ -515,9 +508,13 @@ mod tests {
             panic!("valid configuration");
         };
 
-        assert_eq!(config.redirected_drives.len(), 2);
-        assert!(config.redirected_drives[0].read_only);
-        assert!(!config.redirected_drives[1].read_only);
+        // `RedirectedDrive` keeps its read-only flag private, so its constructor is the only way to state the expectation.
+        // The IDs, names, and flags are this test's literals, and the constructor checks only path and name syntax.
+        let expected = [
+            super::RedirectedDrive::new(1, "ReadOnly", &root_path, true).unwrap(),
+            super::RedirectedDrive::new(2, "Writable", &root_path, false).unwrap(),
+        ];
+        assert_eq!(config.redirected_drives, expected);
     }
 
     // oracle: mutant sanitize two distinct names to different wire names
@@ -560,7 +557,7 @@ mod tests {
             panic!("valid configuration");
         };
         assert_eq!(config.redirected_drives.len(), 2);
-        assert_eq!(config.redirected_drives[1].device_id, 2);
+        assert_eq!(config.redirected_drives[1].device_id(), 2);
     }
 
     #[cfg(not(windows))]
