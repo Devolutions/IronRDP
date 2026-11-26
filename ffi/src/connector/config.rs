@@ -12,8 +12,6 @@ pub(crate) struct RedirectedDriveConfig {
     pub(crate) display_name: String,
     pub(crate) root_path: String,
     pub(crate) read_only: bool,
-    #[cfg(windows)]
-    pub(crate) wire_name: String,
 }
 
 #[cfg(any(windows, test))]
@@ -126,6 +124,9 @@ pub mod ffi {
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
         pub direct_dvc: Option<DirectDvcConfig>,
         redirected_drives: Vec<super::RedirectedDriveConfig>,
+        /// Sanitized names of `redirected_drives`, kept so each addition checks for collisions without re-deriving them.
+        #[cfg(windows)]
+        redirected_drive_wire_names: Vec<String>,
     }
 
     /// Where the server plays audio (the `audiomode` `.rdp` setting).
@@ -303,7 +304,7 @@ pub mod ffi {
             #[cfg(windows)]
             {
                 let wire_name = super::drive_wire_name(display_name);
-                if self.redirected_drives.iter().any(|drive| drive.wire_name == wire_name) {
+                if self.redirected_drive_wire_names.contains(&wire_name) {
                     return Err("redirected drive name is already in use".into());
                 }
                 let device_id =
@@ -322,8 +323,8 @@ pub mod ffi {
                     display_name: display_name.to_owned(),
                     root_path: root_path.to_owned(),
                     read_only,
-                    wire_name,
                 });
+                self.redirected_drive_wire_names.push(wire_name);
                 Ok(())
             }
 
