@@ -11,6 +11,7 @@ use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decode
 use ironrdp_egfx::pdu::{Avc420Region, CapabilitiesAdvertisePdu, CapabilitySet, Encoding};
 use ironrdp_egfx::server::GraphicsPipelineServer;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
+use proptest::prelude::*;
 use rstest::rstest;
 
 /// Neither dimension is a whole number of macroblocks, so the views carry padding.
@@ -470,6 +471,52 @@ fn a_converted_picture_reads_back_unchanged() {
     let picture = Yuv444Frame::from_rgba(&original, WIDTH, HEIGHT).expect("picture");
     let difference = max_difference(&picture.to_rgba(&full_rect()), &original);
     assert!(difference <= TOLERANCE, "difference {difference}");
+}
+
+/// A picture with at least one even side, and a non-empty rectangle inside it.
+///
+/// A picture with two odd sides is left out: its bottom-right chroma block holds one pixel and three
+/// neutral padding samples, which differ too little for the reverse chroma filter of MS-RDPEGFX
+/// 3.3.8.3.2 to apply, so that pixel keeps the subsampled chroma.
+fn picture_and_rectangle() -> impl Strategy<Value = (u16, u16, ExclusiveRectangle)> {
+    (1u16..=33, 1u16..=33)
+        .prop_filter("a side is even", |(width, height)| width % 2 == 0 || height % 2 == 0)
+        .prop_flat_map(|(width, height)| {
+            let columns = (0..width).prop_flat_map(move |left| (Just(left), left + 1..=width));
+            let rows = (0..height).prop_flat_map(move |top| (Just(top), top + 1..=height));
+            (Just(width), Just(height), columns, rows).prop_map(|(width, height, (left, right), (top, bottom))| {
+                let rect = ExclusiveRectangle {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                };
+                (width, height, rect)
+            })
+        })
+}
+
+proptest! {
+    // oracle: property round-trip
+    #[test]
+    fn a_rectangle_of_a_converted_picture_reads_back_unchanged(
+        (width, height, rect) in picture_and_rectangle(),
+        seed in 0usize..4,
+    ) {
+        let original = checkerboard_of(seed, usize::from(width), usize::from(height));
+        let picture = Yuv444Frame::from_rgba(&original, width, height).expect("picture");
+        let expected: Vec<u8> = original
+            .chunks_exact(usize::from(width) * 4)
+            .take(usize::from(rect.bottom))
+            .skip(usize::from(rect.top))
+            .flat_map(|row| &row[usize::from(rect.left) * 4..usize::from(rect.right) * 4])
+            .copied()
+            .collect();
+
+        let difference = max_difference(&picture.to_rgba(&rect), &expected);
+
+        prop_assert!(difference <= TOLERANCE, "difference {}", difference);
+    }
 }
 
 // oracle: spec MS-RDPEGFX §3.3.8.3.2
