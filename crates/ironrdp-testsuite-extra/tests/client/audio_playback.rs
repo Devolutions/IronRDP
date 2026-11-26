@@ -92,7 +92,7 @@ fn sound_off_disables_client_playback() {
     assert_eq!(connector.config.audio_playback_mode(), AudioPlaybackMode::Disabled);
 }
 
-// oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_REMOTECONSOLEAUDIO plays audio on the server, which needs no client RDPSND channel)
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_REMOTECONSOLEAUDIO plays audio on the server, so losing local sound output leaves the mode unchanged)
 #[test]
 fn sound_off_keeps_server_playback() {
     let (connector, _) = connector_without_sound(complete_builder(), AudioMode::PlayOnServer);

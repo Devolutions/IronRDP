@@ -826,7 +826,7 @@ ironrdp_rdpdr:i:0
 }
 
 // oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: 0 plays sounds on the local device, 1 in the remote session, 2 not at all)
-// oracle: spec `ironrdp_connector::Config::enable_audio_playback` docs (true only for local playback)
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is clear only when audio plays on the client, which is what the legacy field set to true requests)
 #[rstest::rstest]
 #[case::client("0", ironrdp_connector::AudioPlaybackMode::Client, true)]
 #[case::server("1", ironrdp_connector::AudioPlaybackMode::Server, false)]
@@ -852,7 +852,7 @@ fn audiomode_selects_audio_playback_mode(
     assert_eq!(legacy_playback, expected_legacy_playback);
 }
 
-// oracle: reference Supported RDP properties, audiomode (https://learn.microsoft.com/azure/virtual-desktop/rdp-properties: the default 0 plays sounds on the local device)
+// oracle: mutant an out-of-range audiomode rejected or read as disabled audio (no document decides; IronRDP keeps the default, which plays sounds on the local device)
 #[test]
 fn invalid_audiomode_falls_back_to_audio_playback_enabled() {
     let config = parse_config_from_rdp(
