@@ -928,7 +928,12 @@ test("the writer retries transient GitHub errors only for idempotent requests", 
     const retries = [];
     const sleeps = [];
     retryTransientRequests({ hook: { wrap: (name, fn) => { wrapper = fn; } } }, {
-      sleep: async (ms) => sleeps.push(ms), onRetry: (retry) => retries.push(retry),
+      sleep: async (ms) => sleeps.push(ms),
+      warn: (message) => {
+        const { event, ...retry } = JSON.parse(message);
+        assert.equal(event, "pr-automation.github-retry");
+        retries.push(retry);
+      },
     });
     let calls = 0;
     const request = async () => {
@@ -6435,18 +6440,18 @@ test("the reusable pipeline stays caller-driven and reports every stage back", (
     ["failure-reason:", "superseded:"]);
 });
 
-test("automatic leases claim once, read complete history, and block an active owner", async () => {
+// A review-claim double whose check-run listing can trail `checks.create`, as GitHub's does.
+const reviewClaimFake = ({ hiddenListings = 0, listingError, updateError } = {}) => {
   const runs = [];
+  const updates = [];
   const calls = { create: [], list: [] };
-  const listChecks = () => {};
+  let hidden = hiddenListings;
   const listRuns = () => {};
   const gate = {
     ok: true, force: false, head_sha: SHA, classificationValid: true,
     classificationCheck: true, classificationId: 9, legitimacyStopped: false,
     ciGreen: true, ciRunId: 1, ciRunAttempt: 1, ciSource: "listing",
-    reviewAtHead: false, policyEligible: true,
-    labels: ["risk/low"], contributor: { status: "eligible", association: "CONTRIBUTOR" },
-    protocolRelated: false, risk: "low", specialistReviewers: ["code-compressor"],
+    reviewAtHead: false, policyEligible: true, labels: ["risk/low"],
   };
   const github = {
     paginate: { iterator: async function* (method, parameters) {
@@ -6457,18 +6462,25 @@ test("automatic leases claim once, read complete history, and block an active ow
           id: 9, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
           conclusion: "success", app: { slug: "github-actions" },
         }] };
+      } else if (runs.length > 0 && listingError) {
+        throw listingError;
+      } else if (runs.length > 0 && hidden > 0) {
+        hidden -= 1;
+        yield { data: [] };
       } else yield { data: runs };
     } },
     rest: {
       checks: {
-        listForRef: listChecks,
+        listForRef: () => {},
         create: async (payload) => {
           calls.create.push(payload);
-          const claim = {
-            id: 19, ...payload, app: { slug: "github-actions" }, output: payload.output,
-          };
+          const claim = { id: 19, ...payload, app: { slug: "github-actions" } };
           runs.push(claim);
           return { data: claim };
+        },
+        update: async (payload) => {
+          if (updateError) throw updateError;
+          updates.push(payload);
         },
       },
       actions: {
@@ -6479,6 +6491,11 @@ test("automatic leases claim once, read complete history, and block an active ow
       issues: { get: async () => ({ data: { labels: [{ name: "risk/low" }] } }) },
     },
   };
+  return { github, gate, updates, calls };
+};
+
+test("automatic leases claim once, read complete history, and block an active owner", async () => {
+  const { github, gate, calls } = reviewClaimFake();
   const first = await claimAutomaticLease({
     github, owner: "Devolutions", repo: "IronRDP", kind: "review", headSha: SHA,
     prNumber: 1, gate, runId: 7, attempt: 1,
@@ -6545,57 +6562,9 @@ test("automatic admission neutralizes a claim when post-validation observes a dr
   })), [{ check_run_id: 19, conclusion: "neutral", title: "Automation superseded" }]);
 });
 
-// The check-run listing can trail `checks.create` by seconds while the pull request is unchanged.
-const claimReviewWithListingLag = async ({
-  hiddenListings, listingRetries, listingError, updateError,
-}) => {
-  const runs = [];
-  const updates = [];
+const claimReviewWithListingLag = async ({ listingRetries, ...listing }) => {
+  const { github, gate, updates } = reviewClaimFake(listing);
   const sleeps = [];
-  let hidden = hiddenListings;
-  const listRuns = () => {};
-  const gate = {
-    ok: true, force: false, head_sha: SHA, classificationValid: true,
-    classificationCheck: true, classificationId: 9, legitimacyStopped: false,
-    ciGreen: true, ciRunId: 1, ciRunAttempt: 1, ciSource: "listing",
-    reviewAtHead: false, policyEligible: true, labels: ["risk/low"],
-  };
-  const github = {
-    paginate: { iterator: async function* (method, parameters) {
-      if (method === listRuns) yield { data: [ciRun({ id: 1 })] };
-      else if (parameters.check_name === "AI classification") {
-        yield { data: [{
-          id: 9, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
-          conclusion: "success", app: { slug: "github-actions" },
-        }] };
-      } else if (runs.length > 0 && listingError) {
-        throw listingError;
-      } else if (runs.length > 0 && hidden > 0) {
-        hidden -= 1;
-        yield { data: [] };
-      } else yield { data: runs };
-    } },
-    rest: {
-      checks: {
-        listForRef: () => {},
-        create: async (payload) => {
-          const claim = { id: 19, ...payload, app: { slug: "github-actions" } };
-          runs.push(claim);
-          return { data: claim };
-        },
-        update: async (payload) => {
-          if (updateError) throw updateError;
-          updates.push(payload);
-        },
-      },
-      actions: {
-        getWorkflowRun: async () => ({ data: { run_attempt: 1, status: "in_progress" } }),
-        listWorkflowRunsForRepo: listRuns,
-      },
-      pulls: { get: async () => ({ data: { state: "open", draft: false, head: { sha: SHA } } }) },
-      issues: { get: async () => ({ data: { labels: [{ name: "risk/low" }] } }) },
-    },
-  };
   try {
     const decision = await claimAutomaticLease({
       github, owner: "Devolutions", repo: "IronRDP", kind: "review", headSha: SHA,
@@ -6953,6 +6922,7 @@ test("a leaseless review failure leaves another live run's claim alone", async (
   const own = await write("in_progress", 8);
   assert.notEqual(own.result.superseded, true);
   assert.ok(own.mutations.some(([kind, payload]) => kind === "update" && payload.check_run_id === 20));
+  await assert.rejects(write("in_progress", null), /requires the writer's run ID/);
 });
 
 test("failed explicit retry neutralizes its lease without downgrading prior success", async () => {

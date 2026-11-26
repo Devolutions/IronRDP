@@ -20,11 +20,9 @@ function isTransientError(error) {
 // `warn` receives one JSON line per retry, so every workflow step logs the same event.
 function retryTransientRequests(github, {
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  warn,
-  onRetry = warn
-    ? (retry) => warn(JSON.stringify({ event: "pr-automation.github-retry", ...retry }))
-    : () => {},
+  warn = () => {},
 } = {}) {
+  const onRetry = (retry) => warn(JSON.stringify({ event: "pr-automation.github-retry", ...retry }));
   github.hook.wrap("request", async (request, options) => {
     for (let attempt = 0; ; attempt += 1) {
       try {

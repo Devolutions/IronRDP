@@ -480,7 +480,11 @@ async function writeState({
     }
     // A failed admission reports without a lease; it must not mark another live run's claim.
     // Its own claim, left in progress when superseding failed, is still this run's to complete.
-    if (state.forced !== true && !state.lease && nonSuccess) {
+    if (state.mode === "review" && state.forced !== true && !state.lease && nonSuccess) {
+      // Without the writer's run, its own stranded claim would look foreign and stay in progress.
+      if (!Number.isSafeInteger(runId) || runId <= 0) {
+        throw new Error("a leaseless failure report requires the writer's run ID");
+      }
       for (const run of checks.filter((run) => run.status === "in_progress")) {
         const lease = parseLeaseMarker(run.output?.summary);
         if (lease && lease.runId !== runId &&
