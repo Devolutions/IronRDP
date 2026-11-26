@@ -10,6 +10,7 @@ mod display_data;
 mod early_capabilities;
 mod entra;
 mod license_exchange;
+mod rdstls;
 #[cfg(feature = "remote-guard")]
 mod remote_guard;
 mod server_core_data;

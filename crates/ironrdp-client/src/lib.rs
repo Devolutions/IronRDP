@@ -51,6 +51,21 @@ pub fn __test_apply_server_redirection(
 
 #[cfg(feature = "__test")]
 #[doc(hidden)]
+pub fn __test_check_target_certificate(
+    config: &config::Config,
+    certificate: &[u8],
+) -> ironrdp_connector::ConnectorResult<()> {
+    rdp::__test_check_target_certificate(config, certificate)
+}
+
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+pub fn __test_reconnect_through_broker(config: &mut config::Config) -> bool {
+    redirection::reconnect_through_broker(config)
+}
+
+#[cfg(feature = "__test")]
+#[doc(hidden)]
 pub fn __test_build_connector(
     config: &config::Config,
     auto_reconnect_cookie: Option<&ironrdp_pdu::rdp::session_info::ServerAutoReconnect>,

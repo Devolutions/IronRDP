@@ -9,6 +9,7 @@ mod multipoint;
 mod network_characteristics;
 mod output_channel;
 mod rail;
+mod rdstls_redirection;
 mod remote_guard;
 mod telemetry;
 mod viewer_rail;

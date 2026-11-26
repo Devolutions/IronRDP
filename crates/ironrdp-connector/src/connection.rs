@@ -273,6 +273,10 @@ pub enum ClientConnectorState {
     },
     /// Waiting for the server's authentication and authorization result.
     EntraAuthWaitResult,
+    /// Waiting for the RDSTLS Capabilities PDU over TLS.
+    RdstlsWaitCapabilities,
+    /// Waiting for the RDSTLS Authentication Response PDU.
+    RdstlsWaitResponse,
     BasicSettingsExchangeSendInitial {
         selected_protocol: nego::SecurityProtocol,
     },
@@ -393,6 +397,8 @@ impl State for ClientConnectorState {
             Self::EntraAuthWaitNonce => "EntraAuthWaitNonce",
             Self::EntraAuthPending { .. } => "EntraAuthPending",
             Self::EntraAuthWaitResult => "EntraAuthWaitResult",
+            Self::RdstlsWaitCapabilities => "RdstlsWaitCapabilities",
+            Self::RdstlsWaitResponse => "RdstlsWaitResponse",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
             Self::BasicSettingsExchangeWaitResponse { .. } => "BasicSettingsExchangeWaitResponse",
             Self::ChannelConnection { .. } => "ChannelConnection",
@@ -452,7 +458,10 @@ pub struct ClientConnector {
     /// Set via [`ClientConnector::with_auto_reconnect_cookie`].
     pub auto_reconnect_cookie: Option<ServerAutoReconnect>,
     /// Password cookie from a Server Redirection PDU, sent in the Client Info PDU.
-    redirection_password_cookie: Option<Vec<u8>>,
+    redirection_password_cookie: Option<rdp::client_info::PasswordCookie>,
+    /// `RedirectionGuid` of a redirection whose password cookie is encrypted for the target and presented through
+    /// RDSTLS.
+    rdstls_redirection_guid: Option<Vec<u8>>,
     /// Start of the in-flight connect-time bandwidth measurement window.
     ///
     /// Set when the server's Bandwidth Measure Start arrives, and only when the
@@ -495,6 +504,7 @@ impl ClientConnector {
             server_rdp_version: None,
             auto_reconnect_cookie: None,
             redirection_password_cookie: None,
+            rdstls_redirection_guid: None,
             connect_time_bw_started_at: None,
             connect_time_bw_bytes: 0,
             network_characteristics: None,
@@ -738,7 +748,27 @@ impl ClientConnector {
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
     #[must_use]
     pub fn with_redirection_password_cookie(mut self, cookie: Vec<u8>) -> Self {
-        self.redirection_password_cookie = Some(cookie);
+        self.redirection_password_cookie = Some(rdp::client_info::PasswordCookie(cookie));
+        self
+    }
+
+    /// Authenticate to the target of a Server Redirection PDU through RDSTLS.
+    ///
+    /// Use it when the PDU sets `LB_PASSWORD_IS_PK_ENCRYPTED`: its `Password` field is then a blob only the target
+    /// server can decrypt, which the client presents unchanged in the
+    /// [\[MS-RDPBCGR\] 2.2.17.2 RDSTLS Authentication Request PDU with Password Credentials], together with the
+    /// `RedirectionGuid` and the configured user name and domain.
+    ///
+    /// The connector then requests `PROTOCOL_RDSTLS` and `PROTOCOL_SSL` only, since the blob cannot authenticate
+    /// CredSSP.
+    /// The blob also goes in the Client Info PDU as the password cookie, as
+    /// [`with_redirection_password_cookie`](Self::with_redirection_password_cookie) sends it.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.17.2 RDSTLS Authentication Request PDU with Password Credentials]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/d0c153e4-2727-4f9f-a149-765b7dc52c31
+    #[must_use]
+    pub fn with_rdstls_redirection(mut self, redirection_guid: Vec<u8>, password: Vec<u8>) -> Self {
+        self.redirection_password_cookie = Some(rdp::client_info::PasswordCookie(password));
+        self.rdstls_redirection_guid = Some(redirection_guid);
         self
     }
 
@@ -774,6 +804,12 @@ impl ClientConnector {
     }
 
     fn enabled_security_protocols(&self) -> ConnectorResult<nego::SecurityProtocol> {
+        if self.rdstls_redirection_guid.is_some() {
+            if self.remote_guard || self.entra_auth {
+                return Err(general_err!("RDSTLS redirection excludes RCG and Entra authentication"));
+            }
+            return Ok(nego::SecurityProtocol::RDSTLS | nego::SecurityProtocol::SSL);
+        }
         if self.remote_guard {
             if !self.config.enable_credssp || self.entra_auth || self.auto_reconnect_cookie.is_some() {
                 return Err(general_err!("RCG requires CredSSP and does not support auto-reconnect"));
@@ -1506,6 +1542,8 @@ impl Sequence for ClientConnector {
                 Some(&crate::entra::ENTRA_JSON_HINT)
             }
             ClientConnectorState::EntraAuthPending { .. } => None,
+            ClientConnectorState::RdstlsWaitCapabilities => Some(&crate::rdstls::CAPABILITIES_HINT),
+            ClientConnectorState::RdstlsWaitResponse => Some(&crate::rdstls::AUTHENTICATION_RESPONSE_HINT),
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
             ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } if self.entra_auth => {
                 Some(&crate::entra::ENTRA_POST_AUTH_X224_HINT)
@@ -1611,6 +1649,9 @@ impl Sequence for ClientConnector {
                     requested_protocol.is_standard_rdp_security()
                 } else if self.entra_auth {
                     selected_protocol == nego::SecurityProtocol::RDSAAD
+                } else if self.rdstls_redirection_guid.is_some() {
+                    selected_protocol == nego::SecurityProtocol::RDSTLS
+                        || selected_protocol == nego::SecurityProtocol::SSL
                 } else {
                     selected_protocol.intersects(requested_protocol)
                 };
@@ -1654,6 +1695,9 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::Credssp { selected_protocol }
                 } else if selected_protocol == nego::SecurityProtocol::RDSAAD {
                     ClientConnectorState::EntraAuthWaitNonce
+                } else if selected_protocol == nego::SecurityProtocol::RDSTLS {
+                    debug!("Begin RDSTLS authentication");
+                    ClientConnectorState::RdstlsWaitCapabilities
                 } else {
                     debug!("CredSSP is disabled, skipping NLA");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
@@ -1692,6 +1736,54 @@ impl Sequence for ClientConnector {
                     Written::Nothing,
                     ClientConnectorState::BasicSettingsExchangeSendInitial {
                         selected_protocol: nego::SecurityProtocol::RDSAAD,
+                    },
+                )
+            }
+
+            //== RDSTLS ==//
+            ClientConnectorState::RdstlsWaitCapabilities => {
+                use ironrdp_pdu::rdp::rdstls::{
+                    RDSTLS_VERSION_1, RdstlsCapabilities, RdstlsPasswordAuthenticationRequest,
+                };
+
+                let capabilities = decode::<RdstlsCapabilities>(input).map_err(ConnectorError::decode)?;
+                debug!(message = ?capabilities, "Received");
+                if capabilities.supported_versions & RDSTLS_VERSION_1 == 0 {
+                    return Err(reason_err!("RDSTLS", "the server does not support RDSTLS version 1"));
+                }
+
+                let (Some(redirection_guid), Some(password)) =
+                    (&self.rdstls_redirection_guid, &self.redirection_password_cookie)
+                else {
+                    return Err(general_err!("RDSTLS was negotiated without redirection credentials"));
+                };
+                let request = RdstlsPasswordAuthenticationRequest {
+                    redirection_guid: redirection_guid.clone(),
+                    username: self.config.credentials.username().unwrap_or_default().to_owned(),
+                    domain: self.config.domain.clone().unwrap_or_default(),
+                    password: password.0.clone(),
+                };
+                debug!(message = ?request, "Send");
+                let written = ironrdp_core::encode_buf(&request, output).map_err(ConnectorError::encode)?;
+
+                (Written::from_size(written)?, ClientConnectorState::RdstlsWaitResponse)
+            }
+            ClientConnectorState::RdstlsWaitResponse => {
+                use ironrdp_pdu::rdp::rdstls::{RdstlsAuthenticationResponse, RdstlsResultCode};
+
+                let response = decode::<RdstlsAuthenticationResponse>(input).map_err(ConnectorError::decode)?;
+                debug!(message = ?response, "Received");
+                if response.result_code != RdstlsResultCode::SUCCESS {
+                    return Err(ConnectorError::new(
+                        "RDSTLS",
+                        ConnectorErrorKind::Rdstls(response.result_code),
+                    ));
+                }
+
+                (
+                    Written::Nothing,
+                    ClientConnectorState::BasicSettingsExchangeSendInitial {
+                        selected_protocol: nego::SecurityProtocol::RDSTLS,
                     },
                 )
             }
@@ -1840,7 +1932,7 @@ impl Sequence for ClientConnector {
                     &self.config,
                     &self.client_addr,
                     self.auto_reconnect_cookie.as_ref(),
-                    self.redirection_password_cookie.as_deref(),
+                    self.redirection_password_cookie.as_ref(),
                     self.entra_auth,
                     self.remote_guard,
                 );
@@ -2343,14 +2435,14 @@ fn create_client_info_pdu(
     config: &Config,
     client_addr: &SocketAddr,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
-    password_cookie: Option<&[u8]>,
+    password_cookie: Option<&rdp::client_info::PasswordCookie>,
     entra_auth: bool,
     remote_guard: bool,
 ) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::ClientInfoPdu;
     use ironrdp_pdu::rdp::client_info::{
         AddressFamily, ClientAutoReconnect, ClientInfo, ClientInfoFlags, CompressionType, Credentials,
-        ExtendedClientInfo, ExtendedClientOptionalInfo, PasswordCookie,
+        ExtendedClientInfo, ExtendedClientOptionalInfo,
     };
     use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 
@@ -2423,7 +2515,7 @@ fn create_client_info_pdu(
         // A smart card, Entra, or Remote Credential Guard logon never sends a redirection password cookie.
         password_cookie: password_cookie
             .filter(|_| !entra_auth && !remote_guard && !flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN))
-            .map(|cookie| PasswordCookie(cookie.to_vec())),
+            .cloned(),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
         compression_type,

@@ -1389,6 +1389,8 @@ impl RdpClient {
         let mut auto_reconnect_cookie = None;
         let mut reconnect_attempt = 0;
         let mut server_redirections = 0;
+        // Whether a Server Redirection PDU set up the next attempt, which then goes to its target.
+        let mut just_redirected = false;
 
         loop {
             if *self.close_receiver.borrow_and_update() {
@@ -1396,6 +1398,19 @@ impl RdpClient {
                 break;
             }
 
+            // UNTESTED: an attempt that does not follow a redirection, after an RDSTLS hop, starts again from the
+            // first server, without the auto-reconnect cookie of the target session.
+            // The target accepts an RDSTLS password once, so a retry or resize reconnection straight to it would fail.
+            // When changing this loop, check the retry, resize and redirection paths.
+            if !core::mem::take(&mut just_redirected) && crate::redirection::reconnect_through_broker(&mut self.config)
+            {
+                server_redirections = 0;
+                // The cookie belongs to the target session; the first server redirects there again.
+                auto_reconnect_cookie = None;
+                self.input_event_sender
+                    .session_status
+                    .set_auto_reconnect_cookie_available(false);
+            }
             // Only a transport-loss retry may attach the session-bound ARC cookie. Display
             // fallback reconnects establish a new desktop session and must not reuse it.
             let reconnect_cookie = (reconnect_attempt != 0)
@@ -1610,6 +1625,7 @@ impl RdpClient {
                     {
                         Ok(true) => {
                             // The target is a new connection, not a resumption of the redirecting one.
+                            just_redirected = true;
                             auto_reconnect_cookie = None;
                             self.input_event_sender
                                 .session_status
@@ -1745,6 +1761,7 @@ impl RdpClient {
                         .await
                     {
                         Ok(true) => {
+                            just_redirected = true;
                             auto_reconnect_cookie = None;
                             self.input_event_sender
                                 .session_status
@@ -2918,9 +2935,17 @@ fn build_connector(
     connector = connector.with_cluster_data(client_cluster_data(config, enable_udp));
 
     if !config.remote_guard_mode.is_enabled()
-        && let Some(password_cookie) = config.redirection.as_ref().and_then(|hop| hop.password_cookie.clone())
+        && let Some(hop) = &config.redirection
+        && let Some(password_cookie) = hop.password_cookie.clone()
     {
-        connector = connector.with_redirection_password_cookie(password_cookie);
+        connector = match hop.rdstls_redirection_guid.clone() {
+            Some(redirection_guid) => {
+                // The redirection password logs the user on, so the logon needs no prompt, as in FreeRDP.
+                connector.config.autologon = true;
+                connector.with_rdstls_redirection(redirection_guid, password_cookie)
+            }
+            None => connector.with_redirection_password_cookie(password_cookie),
+        };
     }
 
     if let Some(rail_client) = rail_client {
@@ -3687,7 +3712,7 @@ async fn connect_rdcleanpath_transport(
     let destination = config.destination.to_string();
     let mut network_client = ReqwestNetworkClient::new();
     let server_name = ironrdp_connector::ServerName::from(&config.destination);
-    let (upgraded, server_public_key) = rdcleanpath_handshake(
+    let (upgraded, server_public_key, server_certificate) = rdcleanpath_handshake(
         &mut framed,
         &mut connector,
         &mut network_client,
@@ -3704,6 +3729,10 @@ async fn connect_rdcleanpath_transport(
         },
     )
     .await?;
+    // UNTESTED: the target certificate is checked before `connect_finalize`, which presents the RDSTLS password.
+    // Checking it later would hand the password to a server other than the reported target.
+    // When changing this function, keep the check between the RDCleanPath handshake and `connect_finalize`.
+    check_target_certificate(config, || Ok(server_certificate))?;
 
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
@@ -3749,6 +3778,19 @@ where
     // A bare `enable_tls = false` + `enable_credssp = false` still fails earlier in the connector.
     if config.connector.enable_standard_rdp_security && !config.connector.enable_tls && !config.connector.enable_credssp
     {
+        // Such a configuration requests standard RDP security only, except for an RDSTLS redirection, which requests
+        // RDSTLS and TLS; skipping TLS for either would send the redirection password in the clear.
+        // UNTESTED: a selection other than standard RDP security ends the connection here. Only a named pipe
+        // transport, built on Windows, reaches this branch, so no test does; when changing it, check that no
+        // selection that implies TLS continues without it.
+        if let ironrdp_connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } = connector.state
+            && !selected_protocol.is_standard_rdp_security()
+        {
+            return Err(ironrdp_connector::reason_err!(
+                "Initiation",
+                "the server selected {selected_protocol}, which needs TLS, on a transport configured without it"
+            ));
+        }
         debug!("Skipping TLS upgrade (standard RDP security / plain transport)");
         let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
         let (stream, leftover_bytes) = framed.into_inner();
@@ -3793,7 +3835,16 @@ where
         .await
     };
     let (tls_stream, tls_cert) = tls_upgrade.map_err(|e| ironrdp_connector::custom_err!("TLS upgrade", e))?;
-    warn_on_unexpected_target_certificate(config, &tls_cert);
+    // UNTESTED: the target certificate is checked before `connect_finalize`, which presents the RDSTLS password.
+    // Checking it later would hand the password to a server other than the reported target.
+    // When changing this function, keep the check between the TLS upgrade and `connect_finalize`.
+    check_target_certificate(config, || {
+        use x509_cert::der::Encode as _;
+
+        tls_cert
+            .to_der()
+            .map_err(|e| ironrdp_connector::custom_err!("server certificate encoding", e))
+    })?;
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
@@ -3914,27 +3965,41 @@ fn redirection_certificate_callback(config: &Config) -> Option<ironrdp_tls::Cert
     }))
 }
 
-/// Reports a redirection target whose certificate differs from the one the redirecting server reported, when
-/// certificate validation does not check it.
-fn warn_on_unexpected_target_certificate(config: &Config, tls_cert: &x509_cert::Certificate) {
-    use x509_cert::der::Encode as _;
-
-    let Some(expected) = config
-        .redirection
-        .as_ref()
-        .and_then(|hop| hop.target_certificate.as_ref())
-    else {
-        return;
+/// Compares the certificate a redirection target presents with the one the redirecting server reported.
+///
+/// [MS-RDPBCGR] 5.4.5.3.1 requires them to be identical.
+/// A mismatch ends an RDSTLS hop before its password is presented: unlike CredSSP, RDSTLS does not bind the password
+/// to the server key, so any server that completes the TLS handshake could replay it to the target.
+/// Other hops only report a mismatch.
+///
+/// `certificate` yields the DER encoding of the presented certificate; it is called only when there is a reported
+/// certificate to compare with, so connections without one never encode theirs.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+fn check_target_certificate(
+    config: &Config,
+    certificate: impl FnOnce() -> ConnectorResult<Vec<u8>>,
+) -> ConnectorResult<()> {
+    let Some(hop) = config.redirection.as_ref() else {
+        return Ok(());
     };
-    let Ok(certificate) = tls_cert.to_der() else {
-        return;
+    let Some(expected) = hop.target_certificate.as_deref() else {
+        return Ok(());
     };
-    if certificate != *expected {
-        warn!(
-            server = %config.destination,
-            "The redirection target presented a certificate other than the one the redirecting server reported"
-        );
+    if certificate()? == expected {
+        return Ok(());
     }
+    if hop.rdstls_redirection_guid.is_some() {
+        return Err(ironrdp_connector::reason_err!(
+            "Redirect",
+            "the RDSTLS redirection target presented a certificate other than the one the redirecting server reported"
+        ));
+    }
+    warn!(
+        server = %config.destination,
+        "The redirection target presented a certificate other than the one the redirecting server reported"
+    );
+    Ok(())
 }
 
 #[cfg(feature = "entra-auth")]
@@ -4095,7 +4160,7 @@ async fn rdcleanpath_handshake<S, N>(
     connector: &mut ironrdp_connector::ClientConnector,
     network_client: &mut N,
     params: RDCleanPathHandshakeParams,
-) -> ConnectorResult<(ironrdp_tokio::Upgraded, Vec<u8>)>
+) -> ConnectorResult<(ironrdp_tokio::Upgraded, Vec<u8>, Vec<u8>)>
 where
     S: ironrdp_tokio::FramedRead + FramedWrite,
     N: ironrdp_tokio::NetworkClient,
@@ -4296,7 +4361,7 @@ where
             }
         };
 
-        Ok((upgraded, server_public_key))
+        Ok((upgraded, server_public_key, server_cert.as_bytes().to_vec()))
     }
 }
 
@@ -6269,6 +6334,11 @@ fn process_clipboard_message(
 
     let frame = active_stage.process_svc_processor_messages(svc_messages)?;
     Ok(vec![ActiveStageOutput::ResponseFrame(frame)])
+}
+
+#[cfg(feature = "__test")]
+pub(crate) fn __test_check_target_certificate(config: &Config, certificate: &[u8]) -> ConnectorResult<()> {
+    check_target_certificate(config, || Ok(certificate.to_vec()))
 }
 
 #[cfg(feature = "__test")]
