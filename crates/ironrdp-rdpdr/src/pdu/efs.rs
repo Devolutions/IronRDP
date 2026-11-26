@@ -1339,8 +1339,8 @@ impl DeviceAnnounceHeader {
 
     /// Returns the name a drive announce carries in DeviceData for a drive named `name`.
     ///
-    /// [MS-RDPEFS] 2.2.1.3, "Device Announce Header (DEVICE_ANNOUNCE)", lists `<`, `>`, `"`, `/`, `\` and `|` as invalid
-    /// in PreferredDosName, and a colon anywhere but at the end.
+    /// [MS-RDPEFS] 2.2.1.3, "Device Announce Header (DEVICE_ANNOUNCE)", lists `<`, `>`, `"`, `/`, `\`
+    /// and `|` as invalid in PreferredDosName, and a colon anywhere but at the end.
     /// It sets no such rule for DeviceData, but Windows refuses a drive whose DeviceData name holds one of them.
     /// Like FreeRDP, this function replaces each of them with `_`, and NUL too, since it would end the name early.
     /// Every other character is kept.
