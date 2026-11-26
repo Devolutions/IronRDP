@@ -872,6 +872,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn capture_before_smartcard_requests_no_playback_over_client_choice() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Client))?;
@@ -884,6 +885,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn capture_after_smartcard_requests_no_playback_over_client_choice() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Client))?;
@@ -923,6 +925,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn static_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -936,6 +939,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn static_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -947,6 +951,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn dynamic_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -962,6 +967,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn dynamic_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -977,6 +983,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn playback_proxy_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -992,6 +999,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn playback_proxy_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -1007,6 +1015,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn native_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -1021,6 +1030,7 @@ mod tests {
     }
 
     // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn native_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
