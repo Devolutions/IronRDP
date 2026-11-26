@@ -346,6 +346,12 @@ pub mod ffi {
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
+            if !matches!(
+                connector.state,
+                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
+            ) {
+                return Err("dynamic channels must be attached before connecting".into());
+            }
 
             let capture = audio_channel_kind(processor.channel_name()) == Some(AudioChannelKind::Capture);
             let drdynvc = match connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
@@ -447,12 +453,19 @@ pub mod ffi {
         ///
         /// Rejects duplicate names and names already registered by another listener.
         /// This includes built-in channels and pipe proxies.
+        /// Call before connecting.
         ///
         /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
         pub fn with_dynamic_channel_direct(&mut self, config: &DirectDvcConfig) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
+            if !matches!(
+                connector.state,
+                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
+            ) {
+                return Err("dynamic channels must be attached before connecting".into());
+            }
 
             let mut channel_names = std::collections::BTreeSet::new();
             for channel_name in &config.channel_names {
@@ -755,6 +768,36 @@ mod tests {
         Ok(())
     }
 
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2538#discussion_r4708091552
+    #[test]
+    fn playback_dvc_after_first_step_is_rejected() -> Result<(), &'static str> {
+        let mut connector = default_connector()?;
+        connector
+            .with_dynamic_channel_display_control()
+            .map_err(|_| "display control")?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
+
+        assert!(!attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+        assert!(!attach_direct(
+            &mut connector,
+            ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+        )?);
+        let drdynvc = connector
+            .0
+            .as_mut()
+            .ok_or("connector")?
+            .get_static_channel_processor::<ironrdp::dvc::DrdynvcClient>()
+            .ok_or("dynamic channels")?;
+        assert!(!crate::audio::has_audio_channel(
+            drdynvc,
+            crate::audio::AudioChannelKind::Playback
+        ));
+        Ok(())
+    }
+
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602557
     #[test]
     fn capture_only_native_audio_requests_no_playback() -> Result<(), &'static str> {
@@ -766,11 +809,12 @@ mod tests {
 
     // oracle: mutant ignore an explicit request to disable audio playback
     #[test]
-    fn smartcard_compatibility_channel_honors_explicit_playback_disablement() -> Result<(), &'static str> {
+    fn explicit_playback_disablement_is_followed_with_a_playback_channel() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Disabled))?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
+        connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
         assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
