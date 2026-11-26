@@ -1051,7 +1051,7 @@ async function runResolveReviewScript({ report, pipelineResult = "success", admi
     summary: {
       addHeading: () => core.summary,
       addRaw: (value) => { summary.push(value); return core.summary; },
-      addList: () => core.summary,
+      addList: (items) => { summary.push(...items); return core.summary; },
       write: async () => {},
     },
   };
@@ -6825,10 +6825,11 @@ test("admission jobs own provider routing and recheck prevents a general call af
 });
 
 test("a failed review admission reports automation-failed with an unavailable review check", async () => {
-  const { state } = await runResolveReviewScript({
+  const { state, summary } = await runResolveReviewScript({
     report: { v: REPORT_VERSION, status: "failed", stages: [] },
     pipelineResult: "skipped", admissionResult: "failure",
   });
+  assert.match(summary, /Review admission failed .*rerun the failed jobs/);
   assert.equal(state.failed, true);
   assert.equal(state.reason, "review admission failed");
   assert.ok(state.labelSets.some((set) => set.desired.includes("automation-failed")));
@@ -6877,6 +6878,56 @@ test("PR #1981 keeps a same-head success when automatic or forced failure arrive
     });
   }
   assert.deepEqual(mutations, []);
+});
+
+test("a leaseless review failure leaves another live run's claim alone", async () => {
+  const claim = {
+    id: 20, head_sha: SHA, external_id: SHA, status: "in_progress",
+    app: { slug: "github-actions" },
+    output: { summary: leaseMarker({ kind: "review", headSha: SHA, runId: 8, attempt: 1 }) },
+  };
+  const write = async (ownerStatus) => {
+    const mutations = [];
+    const github = {
+      paginate: { iterator: async function* () { yield { data: [claim] }; } },
+      rest: {
+        checks: {
+          listForRef: () => {},
+          create: async (payload) => mutations.push(["create", payload]),
+          update: async (payload) => mutations.push(["update", payload]),
+        },
+        actions: {
+          getWorkflowRun: async () => ({ data: { run_attempt: 1, status: ownerStatus } }),
+        },
+        pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+        issues: {
+          get: async () => ({ data: { labels: [] } }),
+          addLabels: async (payload) => mutations.push(["add", payload]),
+          removeLabel: async (payload) => mutations.push(["remove", payload]),
+        },
+      },
+    };
+    const result = await writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+      botLogin: "github-actions[bot]",
+      state: {
+        ok: true, mode: "review", expectedSha: SHA, forced: false, failed: true,
+        reason: "review admission failed",
+        labelSets: [{ owned: [FAILURE_LABEL], desired: [FAILURE_LABEL] }],
+        comments: [], check: {
+          name: "AI automated review", externalId: SHA,
+          title: "Automated review unavailable", summary: "failed", conclusion: "neutral",
+        },
+      },
+    });
+    return { result, mutations };
+  };
+  const live = await write("in_progress");
+  assert.equal(live.result.superseded, true);
+  assert.deepEqual(live.mutations, []);
+  const finished = await write("completed");
+  assert.notEqual(finished.result.superseded, true);
+  assert.ok(finished.mutations.some(([kind]) => kind === "update"));
 });
 
 test("failed explicit retry neutralizes its lease without downgrading prior success", async () => {

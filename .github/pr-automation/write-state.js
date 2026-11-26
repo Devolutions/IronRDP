@@ -9,7 +9,8 @@ const {
 } = require("./review-render");
 const { reviewPolicyEligible } = require("./routing");
 const {
-  hasCurrentClassification, ownsActiveLease, parseLeaseMarker, recheckAutomaticReview,
+  hasCurrentClassification, ownerIsActive, ownsActiveLease, parseLeaseMarker,
+  recheckAutomaticReview,
 } = require("./automation-lease");
 const {
   assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHeadNow,
@@ -475,6 +476,15 @@ async function writeState({
         checks.some((run) => run.status === "in_progress" &&
           parseLeaseMarker(run.output?.summary))) {
       return { ok: true, superseded: true };
+    }
+    // A failed admission reports without a lease; it must not mark another live run's claim.
+    if (state.forced !== true && !state.lease && nonSuccess) {
+      for (const run of checks.filter((run) => run.status === "in_progress")) {
+        const lease = parseLeaseMarker(run.output?.summary);
+        if (lease && await ownerIsActive(github, { ...lease, owner, repo })) {
+          return { ok: true, superseded: true };
+        }
+      }
     }
     if (state.forced === true && !nonSuccess) {
       const automatic = checks.filter((run) => {

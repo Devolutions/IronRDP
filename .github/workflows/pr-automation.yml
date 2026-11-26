@@ -1001,12 +1001,14 @@ jobs:
                },
              }));
              if (process.env.REVIEW_PIPELINE_RESULT === "skipped") {
-               const reasons = reviewSkipReasons({
-                 gate,
-                 gateResult: process.env.REVIEW_GATE_RESULT,
-                 rateLimit: parse(process.env.FORK_RATE_LIMIT, null),
-                 rateLimitResult: process.env.FORK_RATE_LIMIT_RESULT,
-               });
+               const reasons = admissionFailed
+                 ? ["Review admission failed before the review started; rerun the failed jobs to retry it."]
+                 : reviewSkipReasons({
+                   gate,
+                   gateResult: process.env.REVIEW_GATE_RESULT,
+                   rateLimit: parse(process.env.FORK_RATE_LIMIT, null),
+                   rateLimitResult: process.env.FORK_RATE_LIMIT_RESULT,
+                 });
                await core.summary
                  .addHeading("Automated review skipped")
                  .addRaw("The automated review did not run because:", true)
