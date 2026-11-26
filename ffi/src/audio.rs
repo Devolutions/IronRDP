@@ -140,15 +140,12 @@ mod native {
             Ok(message)
         }
 
-        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         pub(crate) fn attach(
             self: &Arc<Self>,
             connector: &mut ironrdp::connector::ClientConnector,
             compatibility_rdpsnd: bool,
         ) -> Result<(), &'static str> {
             let channels = &connector.static_channels;
-            let playback_type =
-                !compatibility_rdpsnd && channels.get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>().is_some();
             let drdynvc_type = channels.get_by_type::<ironrdp::dvc::DrdynvcClient>().is_some();
             let rdpdr_type = channels.get_by_type::<ironrdp::rdpdr::Rdpdr>().is_some();
             if self.playback
@@ -176,7 +173,7 @@ mod native {
             if !crate::connector::has_static_channel_space(channels, needed) {
                 return Err("no space for native audio channels");
             }
-            let (playback_dvc, capture_dvc) =
+            let capture_dvc =
                 if let Some(drdynvc) = connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
                     let playback_in_use = has_audio_channel(drdynvc, AudioChannelKind::Playback);
                     let capture_in_use = has_audio_channel(drdynvc, AudioChannelKind::Capture);
@@ -185,16 +182,15 @@ mod native {
                     if playback_conflicts || capture_conflicts {
                         return Err("native audio dynamic channel is already registered");
                     }
-                    (playback_in_use, capture_in_use)
+                    capture_in_use
                 } else {
-                    (false, false)
+                    false
                 };
             if self.attached.swap(true, Ordering::AcqRel) {
                 return Err("native audio is already attached");
             }
 
             connector.config.enable_audio_capture = self.capture || capture_dvc;
-            connector.config.enable_audio_playback = self.playback || playback_type || playback_dvc;
             if self.playback {
                 if compatibility_rdpsnd {
                     connector
@@ -1011,17 +1007,6 @@ mod native {
             assert!(audio.0.enqueue_capture(token, Vec::new()).is_err());
             assert!(audio.0.enqueue_capture(token, Vec::new()).is_err());
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
-        }
-
-        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602557
-        #[test]
-        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-        fn capture_only_disables_playback_advertisement() {
-            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
-            let mut connector = connector();
-            audio.0.attach(&mut connector, false).expect("attach native capture");
-
-            assert!(!connector.config.enable_audio_playback);
         }
 
         // oracle: spec MS-RDPEA §3.2.5.2.1.6

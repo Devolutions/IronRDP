@@ -7,7 +7,12 @@ pub mod state;
 pub(crate) struct RdpdrConfiguration {
     drives: Vec<config::RedirectedDriveConfig>,
     smartcard: bool,
-    audio_playback_forced: bool,
+    /// The playback mode the application chose, kept apart from the connector configuration
+    /// so the request can be decided again if the first connection step fails.
+    /// See the [playback request intent].
+    ///
+    /// [playback request intent]: https://github.com/Devolutions/IronRDP/blob/master/ffi/src/connector/INTENT.md#playback-request
+    playback_choice: Option<ironrdp::connector::AudioPlaybackMode>,
     /// INVARIANT: This is true only while the automatically installed silent RDPSND channel is present.
     compatibility_rdpsnd: bool,
 }
@@ -17,15 +22,71 @@ pub(crate) fn has_static_channel_space(channels: &ironrdp::svc::StaticChannelSet
     channels.len() + needed <= ironrdp::svc::MAX_STATIC_CHANNELS
 }
 
-#[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-fn attach_rdpdr_compatibility_rdpsnd(connector: &mut ironrdp::connector::ClientConnector, audio_playback_forced: bool) {
-    let playback_dvc = connector
-        .get_static_channel_processor::<ironrdp::dvc::DrdynvcClient>()
-        .is_some_and(|drdynvc| crate::audio::has_audio_channel(drdynvc, crate::audio::AudioChannelKind::Playback));
-    connector.config.enable_audio_playback = audio_playback_forced || playback_dvc;
+fn attach_rdpdr_compatibility_rdpsnd(connector: &mut ironrdp::connector::ClientConnector) {
     connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(
         ironrdp::rdpsnd::client::NoopRdpsndBackend,
     )));
+}
+
+/// Whether the connector has not sent its first connection PDU yet.
+///
+/// Audio, RDPDR and dynamic channels are attached only while this holds,
+/// because the playback request is decided from them when the connection starts.
+fn connection_not_started(connector: &ironrdp::connector::ClientConnector) -> bool {
+    matches!(
+        connector.state,
+        ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
+    )
+}
+
+/// Fails with `message` once the connector has sent its first connection PDU.
+fn ensure_not_started(
+    connector: &ironrdp::connector::ClientConnector,
+    message: &'static str,
+) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+    if connection_not_started(connector) {
+        Ok(())
+    } else {
+        Err(message.into())
+    }
+}
+
+/// Decides the audio playback request from the channels attached when the connection starts,
+/// following the [playback request intent].
+///
+/// Runs only before the first connection PDU, after which audio, RDPDR and dynamic channels are refused,
+/// so the request does not depend on the order in which those channels were attached.
+///
+/// [playback request intent]: https://github.com/Devolutions/IronRDP/blob/master/ffi/src/connector/INTENT.md#playback-request
+fn decide_audio_playback(connector: &mut ironrdp::connector::ClientConnector, rdpdr: &RdpdrConfiguration) {
+    use ironrdp::connector::AudioPlaybackMode;
+
+    if !connection_not_started(connector) {
+        return;
+    }
+
+    let mode = match rdpdr.playback_choice {
+        Some(mode @ (AudioPlaybackMode::Server | AudioPlaybackMode::Disabled)) => mode,
+        Some(AudioPlaybackMode::Client) | None => {
+            // The compatibility channel discards audio, so asking for audio with only that channel would lose it.
+            let static_playback = !rdpdr.compatibility_rdpsnd
+                && connector
+                    .static_channels
+                    .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
+                    .is_some();
+            let dynamic_playback = connector
+                .get_static_channel_processor::<ironrdp::dvc::DrdynvcClient>()
+                .is_some_and(|drdynvc| {
+                    crate::audio::has_audio_channel(drdynvc, crate::audio::AudioChannelKind::Playback)
+                });
+            if static_playback || dynamic_playback {
+                AudioPlaybackMode::Client
+            } else {
+                AudioPlaybackMode::Disabled
+            }
+        }
+    };
+    connector.config.audio_playback_mode = Some(mode);
 }
 
 #[diplomat::bridge]
@@ -139,8 +200,7 @@ pub mod ffi {
                 None,
                 super::RdpdrConfiguration {
                     drives: config.redirected_drives.clone(),
-                    audio_playback_forced: config.connector.audio_playback_mode
-                        == Some(ironrdp::connector::AudioPlaybackMode::Client),
+                    playback_choice: config.connector.audio_playback_mode,
                     ..Default::default()
                 },
             );
@@ -154,7 +214,7 @@ pub mod ffi {
                     .as_mut()
                     .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
                 connector.attach_static_channel(rdpdr);
-                super::attach_rdpdr_compatibility_rdpsnd(connector, client.2.audio_playback_forced);
+                super::attach_rdpdr_compatibility_rdpsnd(connector);
                 client.2.compatibility_rdpsnd = true;
             }
 
@@ -164,7 +224,6 @@ pub mod ffi {
         // FIXME: Naming: since this is not a builder pattern, use "attach"?
         // FIXME: We need to create opaque for ironrdp::svc::StaticChannelSet
         /// Must use
-        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         pub fn with_static_channel_rdp_snd(&mut self) -> Result<(), Box<IronRdpError>> {
             use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 
@@ -175,15 +234,9 @@ pub mod ffi {
                 .0
                 .as_mut()
                 .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
-            if !matches!(
-                connector.state,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-            ) {
-                return Err("RDPSND must be attached before connecting".into());
-            }
+            super::ensure_not_started(connector, "RDPSND must be attached before connecting")?;
             if self.2.compatibility_rdpsnd {
                 self.2.compatibility_rdpsnd = false;
-                connector.config.enable_audio_playback = true;
                 return Ok(());
             }
             if connector
@@ -197,7 +250,6 @@ pub mod ffi {
                 return Err("no space for RDPSND channel".into());
             }
             connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend {})));
-            connector.config.enable_audio_playback = true;
 
             Ok(())
         }
@@ -209,7 +261,6 @@ pub mod ffi {
         /// Existing RDPDR configuration is preserved.
         /// An existing RDPSND channel prevents native playback from being attached,
         /// except for the silent compatibility channel installed for RDPDR.
-        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         pub fn with_native_audio(&mut self, audio: &NativeAudio) -> Result<(), Box<IronRdpError>> {
             let connector = self
                 .0
@@ -218,14 +269,8 @@ pub mod ffi {
             if self.1.is_some() {
                 return Err("native audio is already attached to this connector".into());
             }
-            if !matches!(
-                connector.state,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-            ) {
-                return Err("native audio must be attached before connecting".into());
-            }
+            super::ensure_not_started(connector, "native audio must be attached before connecting")?;
             audio.0.attach(connector, self.2.compatibility_rdpsnd)?;
-            connector.config.enable_audio_playback |= self.2.audio_playback_forced;
             if audio.0.has_playback() {
                 self.2.compatibility_rdpsnd = false;
             }
@@ -257,12 +302,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            if !matches!(
-                connector.state,
-                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
-            ) {
-                return Err("RDPDR must be attached before connecting".into());
-            }
+            super::ensure_not_started(connector, "RDPDR must be attached before connecting")?;
             if self.2.smartcard {
                 return Err("smartcard RDPDR is already configured".into());
             }
@@ -294,7 +334,7 @@ pub mod ffi {
                 .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
             connector.attach_static_channel(rdpdr);
             if !existing_rdpsnd {
-                super::attach_rdpdr_compatibility_rdpsnd(connector, self.2.audio_playback_forced);
+                super::attach_rdpdr_compatibility_rdpsnd(connector);
                 self.2.compatibility_rdpsnd = true;
             }
 
@@ -303,7 +343,6 @@ pub mod ffi {
             Ok(())
         }
 
-        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         fn with_dvc<T>(&mut self, processor: T) -> Result<(), Box<IronRdpError>>
         where
             T: DvcClientProcessor + 'static,
@@ -318,10 +357,9 @@ pub mod ffi {
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
+            super::ensure_not_started(connector, "dynamic channels must be attached before connecting")?;
 
-            let kind = audio_channel_kind(processor.channel_name());
-            let playback = kind == Some(AudioChannelKind::Playback);
-            let capture = kind == Some(AudioChannelKind::Capture);
+            let capture = audio_channel_kind(processor.channel_name()) == Some(AudioChannelKind::Capture);
             let drdynvc = match connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
                 Some(processor) => processor,
                 None => {
@@ -337,12 +375,12 @@ pub mod ffi {
             }
 
             drdynvc.attach_dynamic_channel(processor);
-            connector.config.enable_audio_playback |= playback;
             connector.config.enable_audio_capture |= capture;
 
             Ok(())
         }
 
+        /// Call before connecting.
         pub fn with_dynamic_channel_display_control(&mut self) -> Result<(), Box<IronRdpError>> {
             self.with_dvc(DisplayControlClient::new(|c| {
                 info!(display_control_capabilities = ?c, "DisplayControl capabilities received");
@@ -357,6 +395,7 @@ pub mod ffi {
         /// `show_touch_visuals` asks the server to draw its touch visuals.
         /// Protocol version 2 is advertised, which covers touch and pen frames; multipen injection is
         /// not requested, so pen frames use `deviceId` 0.
+        /// Call before connecting.
         ///
         /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
         pub fn with_dynamic_channel_rdpei(
@@ -376,6 +415,7 @@ pub mod ffi {
             ))
         }
 
+        /// Call before connecting.
         pub fn with_dynamic_channel_pipe_proxy(
             &mut self,
             config: &DvcPipeProxyConfig,
@@ -422,13 +462,14 @@ pub mod ffi {
         ///
         /// Rejects duplicate names and names already registered by another listener.
         /// This includes built-in channels and pipe proxies.
+        /// Call before connecting.
         ///
         /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
-        #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
         pub fn with_dynamic_channel_direct(&mut self, config: &DirectDvcConfig) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
+            super::ensure_not_started(connector, "dynamic channels must be attached before connecting")?;
 
             let mut channel_names = std::collections::BTreeSet::new();
             for channel_name in &config.channel_names {
@@ -469,12 +510,12 @@ pub mod ffi {
                     DirectDvcChannelProcessor::new(&sink, &name)
                 });
             }
-            for channel_name in &config.channel_names {
-                match audio_channel_kind(channel_name) {
-                    Some(AudioChannelKind::Playback) => connector.config.enable_audio_playback = true,
-                    Some(AudioChannelKind::Capture) => connector.config.enable_audio_capture = true,
-                    None => {}
-                }
+            if config
+                .channel_names
+                .iter()
+                .any(|channel_name| audio_channel_kind(channel_name) == Some(AudioChannelKind::Capture))
+            {
+                connector.config.enable_audio_capture = true;
             }
             Ok(())
         }
@@ -521,6 +562,7 @@ pub mod ffi {
             };
             let security_protocol = ironrdp::pdu::nego::SecurityProtocol::from_bits(security_protocol)
                 .ok_or_else(|| ironrdp::connector::general_err!("invalid security protocol"))?;
+            super::decide_audio_playback(connector, &self.2);
             let written = connector.initiate_with_security_protocol(security_protocol, &mut write_buf.0)?;
             Ok(Box::new(Written(written)))
         }
@@ -556,6 +598,7 @@ pub mod ffi {
             // at least as accurate as the other drivers' `last_read_at`, which is also a
             // post-read stamp taken right after the read completes rather than exactly
             // when the first byte arrived.
+            super::decide_audio_playback(connector, &self.2);
             let written = connector.step(input, Some(monotonic_now()), &mut write_buf.0)?;
             Ok(Box::new(Written(written)))
         }
@@ -564,6 +607,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
+            super::decide_audio_playback(connector, &self.2);
             let written = connector.step_no_input(&mut write_buf.0)?;
             Ok(Box::new(Written(written)))
         }
@@ -644,30 +688,15 @@ pub mod ffi {
 
 #[cfg(all(test, not(target_os = "android")))]
 mod tests {
+    use ironrdp::connector::AudioPlaybackMode as PlaybackRequest;
+
     use super::ffi::ClientConnector;
     use crate::audio::ffi::NativeAudio;
     use crate::connector::config::ffi::{AudioPlaybackMode, ConfigBuilder, PerformanceFlags};
     use crate::dvc::direct_channel::ffi::{DirectDvcConfig, DirectDvcEventQueue};
     use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessageQueue;
     use crate::dvc::ffi::{DvcPipeProxyConfig, DvcPipeProxyDescriptor};
-
-    fn connector_without_playback() -> Result<ClientConnector, &'static str> {
-        let mut builder = ConfigBuilder::new();
-        builder.with_username_and_password("user", "password");
-        builder.set_desktop_size(768, 1024);
-        builder.set_client_name("client");
-        builder.set_client_dir("C:\\");
-        builder.set_performance_flags(&PerformanceFlags::new_default());
-        builder.audio_playback_mode = Some(AudioPlaybackMode::Disabled);
-        let config = builder.build().map_err(|_| "connector config")?;
-        let client_addr = "127.0.0.1:0".parse().map_err(|_| "test address")?;
-
-        Ok(ClientConnector(
-            Some(ironrdp::connector::ClientConnector::new(config.connector, client_addr)),
-            None,
-            Default::default(),
-        ))
-    }
+    use crate::pdu::ffi::WriteBuf;
 
     fn capture_audio() -> Result<Box<NativeAudio>, &'static str> {
         NativeAudio::new(false, true, "", "", 0).map_err(|_| "audio settings")
@@ -689,6 +718,18 @@ mod tests {
         ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")
     }
 
+    fn decided_playback(connector: &ClientConnector) -> Result<Option<PlaybackRequest>, &'static str> {
+        Ok(connector.0.as_ref().ok_or("connector")?.config.audio_playback_mode)
+    }
+
+    /// Runs the first connection step, where the connector decides its playback request, and returns that request.
+    fn requested_playback(connector: &mut ClientConnector) -> Result<PlaybackRequest, &'static str> {
+        connector
+            .step_no_input(&mut WriteBuf::new())
+            .map_err(|_| "first connection step")?;
+        decided_playback(connector)?.ok_or("playback request")
+    }
+
     fn connector_with_playback_setting(
         setting: Option<AudioPlaybackMode>,
     ) -> Result<Box<ClientConnector>, &'static str> {
@@ -698,65 +739,161 @@ mod tests {
         ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")
     }
 
-    // oracle: mutant enable playback when the caller leaves its setting unspecified
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn smartcard_compatibility_channel_keeps_default_playback_disabled() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(None)?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
-        assert!(!connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
-    // oracle: mutant ignore an explicit request to enable audio playback
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn smartcard_compatibility_channel_honors_explicit_playback_enablement() -> Result<(), &'static str> {
+    fn smartcard_compatibility_channel_alone_requests_no_playback_over_client_choice() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Client))?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
-    // oracle: mutant ignore an explicit request to disable audio playback
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn smartcard_compatibility_channel_honors_explicit_playback_disablement() -> Result<(), &'static str> {
+    fn server_playback_choice_is_followed_with_a_playback_channel() -> Result<(), &'static str> {
+        let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Server))?;
+        connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Server);
+        Ok(())
+    }
+
+    // oracle: mutant accept a playback DVC after the playback request was decided
+    #[test]
+    fn playback_dvc_after_first_step_is_rejected() -> Result<(), &'static str> {
+        let mut connector = default_connector()?;
+        connector
+            .with_dynamic_channel_display_control()
+            .map_err(|_| "display control")?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
+
+        assert!(!attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+        assert!(!attach_direct(
+            &mut connector,
+            ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+        )?);
+        let drdynvc = connector
+            .0
+            .as_mut()
+            .ok_or("connector")?
+            .get_static_channel_processor::<ironrdp::dvc::DrdynvcClient>()
+            .ok_or("dynamic channels")?;
+        assert!(!crate::audio::has_audio_channel(
+            drdynvc,
+            crate::audio::AudioChannelKind::Playback
+        ));
+        Ok(())
+    }
+
+    fn connector_with_static_playback() -> Result<Box<ClientConnector>, &'static str> {
+        let mut connector = default_connector()?;
+        connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+        Ok(connector)
+    }
+
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
+    #[test]
+    fn first_step_with_input_decides_playback() -> Result<(), &'static str> {
+        let mut connector = connector_with_static_playback()?;
+        connector
+            .step(&[], &mut WriteBuf::new())
+            .map_err(|_| "first connection step")?;
+        assert_eq!(decided_playback(&connector)?, Some(PlaybackRequest::Client));
+        Ok(())
+    }
+
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
+    #[test]
+    fn explicit_security_protocol_initiation_decides_playback() -> Result<(), &'static str> {
+        let mut connector = connector_with_static_playback()?;
+        connector
+            .initiate_with_security_protocol(
+                ironrdp::pdu::nego::SecurityProtocol::HYBRID.bits(),
+                &mut WriteBuf::new(),
+            )
+            .map_err(|_| "connection request")?;
+        assert_eq!(decided_playback(&connector)?, Some(PlaybackRequest::Client));
+        Ok(())
+    }
+
+    // oracle: mutant decide a retried first step from the earlier decision instead of the application's choice
+    #[test]
+    fn retried_first_step_decides_from_the_application_choice() -> Result<(), &'static str> {
+        let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Client))?;
+        connector
+            .with_static_channel_rdpdr("client", 42)
+            .map_err(|_| "smartcard")?;
+        // Stands in for a first step that decided the request and then failed before sending.
+        let ClientConnector(Some(inner), _, rdpdr) = &mut *connector else {
+            return Err("connector");
+        };
+        super::decide_audio_playback(inner, rdpdr);
+        assert_eq!(decided_playback(&connector)?, Some(PlaybackRequest::Disabled));
+
+        connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602557
+    #[test]
+    fn capture_only_native_audio_requests_no_playback() -> Result<(), &'static str> {
+        let mut connector = default_connector()?;
+        connector.with_native_audio(&*capture_audio()?).map_err(|_| "capture")?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
+        Ok(())
+    }
+
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
+    #[test]
+    fn explicit_playback_disablement_is_followed_with_a_playback_channel() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Disabled))?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
-        assert!(!connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
-    // oracle: mutant lose explicit playback enablement when capture is attached before RDPDR
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn capture_before_smartcard_preserves_explicit_playback() -> Result<(), &'static str> {
+    fn capture_before_smartcard_requests_no_playback_over_client_choice() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Client))?;
         connector.with_native_audio(&*capture_audio()?).map_err(|_| "capture")?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
-    // oracle: mutant lose explicit playback enablement when capture is attached after RDPDR
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn capture_after_smartcard_preserves_explicit_playback() -> Result<(), &'static str> {
+    fn capture_after_smartcard_requests_no_playback_over_client_choice() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Client))?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
         connector.with_native_audio(&*capture_audio()?).map_err(|_| "capture")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
@@ -775,20 +912,20 @@ mod tests {
     }
 
     /// Checks that playback is advertised through an RDPSND channel other than the silent compatibility one.
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn assert_rdpsnd_playback(connector: &ClientConnector) -> Result<(), &'static str> {
+    fn assert_rdpsnd_playback(connector: &mut ClientConnector) -> Result<(), &'static str> {
         rdpsnd_channel_ptr(connector)?;
         assert!(!connector.2.compatibility_rdpsnd);
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
-    fn assert_native_playback(connector: &ClientConnector) -> Result<(), &'static str> {
+    fn assert_native_playback(connector: &mut ClientConnector) -> Result<(), &'static str> {
         assert!(connector.1.as_ref().is_some_and(|audio| audio.has_playback()));
         assert_rdpsnd_playback(connector)
     }
 
-    // oracle: mutant drop static playback when smartcard RDPDR is attached afterward
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn static_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -798,10 +935,11 @@ mod tests {
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
         assert_eq!(rdpsnd, rdpsnd_channel_ptr(&connector)?);
-        assert_rdpsnd_playback(&connector)
+        assert_rdpsnd_playback(&mut connector)
     }
 
-    // oracle: mutant drop static playback when smartcard RDPDR is attached first
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn static_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -809,12 +947,12 @@ mod tests {
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
         connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
-        assert_rdpsnd_playback(&connector)
+        assert_rdpsnd_playback(&mut connector)
     }
 
-    // oracle: mutant drop dynamic playback when smartcard RDPDR is attached afterward
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn dynamic_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
         assert!(attach_direct(
@@ -824,13 +962,13 @@ mod tests {
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
-    // oracle: mutant drop dynamic playback when smartcard RDPDR is attached first
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn dynamic_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
         connector
@@ -840,13 +978,13 @@ mod tests {
             &mut connector,
             ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
         )?);
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
-    // oracle: mutant drop proxy playback when smartcard RDPDR is attached afterward
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn playback_proxy_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
         assert!(attach_pipe_proxy(
@@ -856,13 +994,13 @@ mod tests {
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
-    // oracle: mutant drop proxy playback when smartcard RDPDR is attached first
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn playback_proxy_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
         connector
@@ -872,11 +1010,12 @@ mod tests {
             &mut connector,
             ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
         ));
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
-    // oracle: mutant drop native playback when smartcard RDPDR is attached afterward
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn native_playback_before_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -887,10 +1026,11 @@ mod tests {
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
         assert_eq!(rdpsnd, rdpsnd_channel_ptr(&connector)?);
-        assert_native_playback(&connector)
+        assert_native_playback(&mut connector)
     }
 
-    // oracle: mutant drop native playback when smartcard RDPDR is attached first
+    // oracle: intent ffi/src/connector/INTENT.md §attachment-order
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn native_playback_after_smartcard_is_preserved() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
@@ -899,7 +1039,7 @@ mod tests {
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "smartcard")?;
         connector.with_native_audio(&audio).map_err(|_| "native audio")?;
-        assert_native_playback(&connector)
+        assert_native_playback(&mut connector)
     }
 
     #[cfg(windows)]
@@ -916,12 +1056,11 @@ mod tests {
     }
 
     #[cfg(windows)]
-    // oracle: mutant enable audio playback when installing the drive compatibility channel
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn drive_compatibility_channel_keeps_playback_disabled_by_default() -> Result<(), &'static str> {
-        let connector = connector_with_drive(None)?;
-        assert!(!connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        let mut connector = connector_with_drive(None)?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
@@ -931,20 +1070,19 @@ mod tests {
     fn static_playback_can_follow_drive_compatibility() -> Result<(), &'static str> {
         let mut connector = connector_with_drive(None)?;
         connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
-        assert_rdpsnd_playback(&connector)
+        assert_rdpsnd_playback(&mut connector)
     }
 
     #[cfg(windows)]
     // oracle: mutant drop drive compatibility when dynamic playback is added later
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn dynamic_playback_can_follow_drive_compatibility() -> Result<(), &'static str> {
         let mut connector = connector_with_drive(None)?;
         assert!(attach_direct(
             &mut connector,
             ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
         )?);
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
@@ -955,16 +1093,15 @@ mod tests {
         let mut connector = connector_with_drive(None)?;
         let audio = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio")?;
         connector.with_native_audio(&audio).map_err(|_| "native audio")?;
-        assert_native_playback(&connector)
+        assert_native_playback(&mut connector)
     }
 
     #[cfg(windows)]
-    // oracle: mutant ignore explicit playback enablement with a drive compatibility channel
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn drive_compatibility_channel_honors_explicit_playback_enablement() -> Result<(), &'static str> {
-        let connector = connector_with_drive(Some(AudioPlaybackMode::Client))?;
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+    fn drive_compatibility_channel_alone_requests_no_playback_over_client_choice() -> Result<(), &'static str> {
+        let mut connector = connector_with_drive(Some(AudioPlaybackMode::Client))?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
@@ -1064,9 +1201,8 @@ mod tests {
 
     // oracle: mutant report success when a foreign RDPSND channel blocks the attachment
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn foreign_rdpsnd_name_collision_preserves_channels_and_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+    fn foreign_rdpsnd_name_collision_preserves_channels_and_requests_no_playback() -> Result<(), &'static str> {
+        let mut connector = default_connector()?;
         add_test_static_channel(&mut connector, "rdpsnd")?;
         let channels = connector.0.as_ref().ok_or("connector")?.static_channels.len();
 
@@ -1075,15 +1211,14 @@ mod tests {
         let inner = connector.0.as_ref().ok_or("connector")?;
         assert_eq!(inner.static_channels.len(), channels);
         assert!(rdpsnd_channel_ptr(&connector).is_err());
-        assert!(!inner.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
     // oracle: mutant report success when RDPSND attachment lacks capacity
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
-    fn insufficient_rdpsnd_capacity_preserves_channels_and_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+    fn insufficient_rdpsnd_capacity_preserves_channels_and_requests_no_playback() -> Result<(), &'static str> {
+        let mut connector = default_connector()?;
         add_test_static_channels(&mut connector, ironrdp::svc::MAX_STATIC_CHANNELS)?;
 
         assert!(connector.with_static_channel_rdp_snd().is_err());
@@ -1091,7 +1226,7 @@ mod tests {
         let inner = connector.0.as_ref().ok_or("connector")?;
         assert_eq!(inner.static_channels.len(), ironrdp::svc::MAX_STATIC_CHANNELS);
         assert!(rdpsnd_channel_ptr(&connector).is_err());
-        assert!(!inner.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
@@ -1116,7 +1251,7 @@ mod tests {
     #[test]
     fn late_rdpdr_attachment_preserves_connector_state() -> Result<(), &'static str> {
         let mut connector = default_connector()?;
-        let mut output = crate::pdu::ffi::WriteBuf::new();
+        let mut output = WriteBuf::new();
         connector.step_no_input(&mut output).map_err(|_| "start connection")?;
         let channels = connector.0.as_ref().ok_or("connector")?.static_channels.len();
 
@@ -1321,9 +1456,8 @@ mod tests {
 
     // oracle: mutant replace an existing RDPDR channel when attaching native playback
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn smartcard_rdpdr_before_native_playback_is_preserved() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "attach RDPDR")?;
@@ -1336,21 +1470,20 @@ mod tests {
 
         let inner = connector.0.as_ref().ok_or("connector")?;
         assert_eq!(rdpdr, rdpdr_channel_ptr(&connector)?);
-        assert!(inner.config.enable_audio_playback);
         assert!(
             inner
                 .static_channels
                 .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
                 .is_some()
         );
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: mutant discard native playback when attaching smartcard RDPDR
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn smartcard_rdpdr_after_native_playback_preserves_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
         connector
             .with_native_audio(&playback)
@@ -1364,7 +1497,6 @@ mod tests {
         let inner = connector.0.as_ref().ok_or("connector")?;
         assert!(rdpdr_channel_ptr(&connector).is_ok());
         assert_eq!(channel_count, inner.static_channels.len());
-        assert!(inner.config.enable_audio_playback);
         assert!(connector.1.is_some());
         assert!(
             inner
@@ -1372,13 +1504,14 @@ mod tests {
                 .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
                 .is_some()
         );
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: mutant replace an existing smartcard RDPDR channel
     #[test]
     fn duplicate_smartcard_rdpdr_is_rejected_without_replacing_the_channel() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         connector
             .with_static_channel_rdpdr("client", 42)
             .map_err(|_| "attach RDPDR")?;
@@ -1391,9 +1524,8 @@ mod tests {
 
     // oracle: mutant drop pre-existing playback state when attaching capture
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn static_playback_before_capture_preserves_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         connector.with_static_channel_rdp_snd().map_err(|_| "attach playback")?;
         let playback = core::ptr::from_ref(
             connector
@@ -1409,7 +1541,6 @@ mod tests {
             .with_native_audio(&*capture_audio()?)
             .map_err(|_| "attach capture")?;
         let inner = connector.0.as_ref().ok_or("connector")?;
-        assert!(inner.config.enable_audio_playback);
         assert!(inner.config.enable_audio_capture);
         assert_eq!(
             playback,
@@ -1421,20 +1552,19 @@ mod tests {
                     .ok_or("playback")?
             )
         );
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn static_playback_after_capture_advertises_both() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         connector
             .with_native_audio(&*capture_audio()?)
             .map_err(|_| "attach capture")?;
         connector.with_static_channel_rdp_snd().map_err(|_| "attach playback")?;
         let inner = connector.0.as_ref().ok_or("connector")?;
-        assert!(inner.config.enable_audio_playback);
         assert!(inner.config.enable_audio_capture);
         assert!(
             inner
@@ -1442,14 +1572,14 @@ mod tests {
                 .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
                 .is_some()
         );
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: mutant allow native playback alongside static playback
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn existing_static_playback_rejects_native_playback_without_consuming_audio() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         connector.with_static_channel_rdp_snd().map_err(|_| "attach playback")?;
         let audio = NativeAudio::new(true, true, "", "", 0).map_err(|_| "audio settings")?;
         let channel_count = connector.0.as_ref().ok_or("connector")?.static_channels.len();
@@ -1458,11 +1588,11 @@ mod tests {
         assert!(connector.1.is_none());
         let inner = connector.0.as_ref().ok_or("connector")?;
         assert_eq!(inner.static_channels.len(), channel_count);
-        assert!(inner.config.enable_audio_playback);
         assert!(!inner.config.enable_audio_capture);
 
-        let mut other = connector_without_playback()?;
+        let mut other = default_connector()?;
         other.with_native_audio(&audio).map_err(|_| "attach rejected audio")?;
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
@@ -1486,7 +1616,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
     fn input_direct_attached_after_playback_advertises_capture() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
         connector.with_native_audio(&playback).map_err(|_| "attach playback")?;
         assert!(attach_direct(&mut connector, ironrdp_rdpeai::CHANNEL_NAME)?);
@@ -1496,9 +1626,8 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn playback_direct_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         connector
             .with_native_audio(&*capture_audio()?)
             .map_err(|_| "attach capture")?;
@@ -1506,17 +1635,17 @@ mod tests {
             &mut connector,
             ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
         )?);
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: mutant allow capture to reuse a direct AUDIO_INPUT channel
     #[test]
     fn capture_and_direct_input_reject_collisions_in_both_orders() -> Result<(), &'static str> {
-        let mut first = connector_without_playback()?;
+        let mut first = default_connector()?;
         assert!(attach_direct(&mut first, ironrdp_rdpeai::CHANNEL_NAME)?);
         assert!(first.with_native_audio(&*capture_audio()?).is_err());
-        let mut second = connector_without_playback()?;
+        let mut second = default_connector()?;
         second
             .with_native_audio(&*capture_audio()?)
             .map_err(|_| "attach capture")?;
@@ -1526,9 +1655,8 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn playback_proxy_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
@@ -1538,53 +1666,48 @@ mod tests {
             ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
         ));
 
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: mutant drop pre-existing playback DVC state when attaching capture
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn playback_proxy_attached_before_capture_advertises_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         assert!(attach_pipe_proxy(
             &mut connector,
             ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
         ));
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
             .map_err(|_| "attach capture-only audio")?;
 
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: mutant drop pre-existing playback DVC state when attaching capture
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn lossy_playback_proxy_before_capture_advertises_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         assert!(attach_pipe_proxy(
             &mut connector,
             ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
         ));
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
             .map_err(|_| "attach capture-only audio")?;
 
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn lossy_playback_proxy_after_capture_advertises_playback() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
@@ -1594,14 +1717,14 @@ mod tests {
             ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
         ));
 
-        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: mutant drop pre-existing capture DVC state when attaching playback
     #[test]
     fn input_proxy_attached_before_playback_advertises_capture() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         assert!(attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
         assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
         let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
@@ -1616,7 +1739,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
     fn input_proxy_attached_after_playback_advertises_capture() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
         connector
             .with_native_audio(&playback)
@@ -1629,22 +1752,20 @@ mod tests {
 
     // oracle: mutant advertise audio for an unrelated dynamic channel
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn unrelated_proxy_does_not_advertise_audio() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         assert!(attach_pipe_proxy(&mut connector, "unrelated"));
 
         let config = &connector.0.as_ref().ok_or("connector")?.config;
-        assert!(!config.enable_audio_playback);
         assert!(!config.enable_audio_capture);
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn separately_attached_playback_survives_later_capture_configuration() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         connector
             .with_static_channel_rdp_snd()
             .map_err(|_| "attach playback channel")?;
@@ -1653,48 +1774,31 @@ mod tests {
             .with_native_audio(&capture)
             .map_err(|_| "attach capture-only audio")?;
 
-        assert!(
-            connector
-                .0
-                .as_ref()
-                .is_some_and(|connector| connector.config.enable_audio_playback)
-        );
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn separately_attached_playback_after_capture_is_advertised() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
             .map_err(|_| "attach capture-only audio")?;
-        assert!(
-            !connector
-                .0
-                .as_ref()
-                .is_some_and(|connector| connector.config.enable_audio_playback)
-        );
 
         connector
             .with_static_channel_rdp_snd()
             .map_err(|_| "attach playback channel")?;
 
-        assert!(
-            connector
-                .0
-                .as_ref()
-                .is_some_and(|connector| connector.config.enable_audio_playback)
-        );
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Client);
         Ok(())
     }
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
     #[test]
     fn capture_only_audio_allows_playback_pipe_proxy() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
@@ -1714,7 +1818,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
     #[test]
     fn capture_only_audio_reserves_input_pipe_proxy() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
@@ -1726,9 +1830,8 @@ mod tests {
 
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
     #[test]
-    #[expect(deprecated, reason = "audio playback is still driven through the legacy field")]
     fn reserved_pipe_proxy_rejects_all_descriptors_without_mutation() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
@@ -1743,12 +1846,12 @@ mod tests {
 
         assert!(connector.with_dynamic_channel_pipe_proxy(&config).is_err());
         let inner = connector.0.as_mut().ok_or("connector")?;
-        assert!(!inner.config.enable_audio_playback);
         let drdynvc = inner
             .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
             .ok_or("dynamic channels")?;
         assert!(!drdynvc.has_channel_name(ironrdp::rdpsnd::client::DVC_CHANNEL_NAME));
         assert!(drdynvc.has_channel_name(ironrdp_rdpeai::CHANNEL_NAME));
+        assert_eq!(requested_playback(&mut connector)?, PlaybackRequest::Disabled);
         Ok(())
     }
 
@@ -1759,7 +1862,7 @@ mod tests {
 
         use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessageSink;
 
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let (sender, receiver) = mpsc::sync_channel(1);
         let sink = DvcPipeProxyMessageSink(sender);
         let mut original = DvcPipeProxyConfig::new(&sink);
@@ -1788,7 +1891,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
     #[test]
     fn valid_proxy_batch_attaches_all_descriptors_after_audio() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let capture = capture_audio()?;
         connector
             .with_native_audio(&capture)
@@ -1816,7 +1919,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
     fn playback_proxy_attached_before_capture_only_audio_is_preserved() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         assert!(attach_pipe_proxy(
             &mut connector,
             ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
@@ -1832,7 +1935,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
     #[test]
     fn playback_only_audio_allows_input_pipe_proxy() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
         connector
             .with_native_audio(&playback)
@@ -1845,7 +1948,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
     #[test]
     fn playback_only_audio_reserves_playback_pipe_proxy() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
         connector
             .with_native_audio(&playback)
@@ -1865,7 +1968,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
     #[test]
     fn input_proxy_attached_before_capture_audio_is_rejected() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         assert!(attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
 
         let capture = capture_audio()?;
@@ -1876,7 +1979,7 @@ mod tests {
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
     #[test]
     fn playback_proxy_attached_before_native_playback_is_rejected() -> Result<(), &'static str> {
-        let mut connector = connector_without_playback()?;
+        let mut connector = default_connector()?;
         assert!(attach_pipe_proxy(
             &mut connector,
             ironrdp::rdpsnd::client::DVC_CHANNEL_NAME

@@ -143,6 +143,14 @@ pub mod ffi {
     #[diplomat::enum_convert(ironrdp::connector::AudioPlaybackMode)]
     pub enum AudioPlaybackMode {
         /// Redirect audio to this computer.
+        ///
+        /// This is also the default.
+        /// The connector asks for audio only when a playback channel is attached when the connection starts,
+        /// not counting the silent RDPSND channel installed for drive or smartcard redirection.
+        /// Otherwise it asks for no audio.
+        /// See the [playback request intent].
+        ///
+        /// [playback request intent]: https://github.com/Devolutions/IronRDP/blob/master/ffi/src/connector/INTENT.md#playback-request
         Client,
         /// Leave audio playing on the remote computer.
         Server,
@@ -396,7 +404,8 @@ pub mod ffi {
 
                 enable_server_pointer: self.enable_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
-                enable_audio_playback: matches!(self.audio_playback_mode, None | Some(AudioPlaybackMode::Client)),
+                // The connector decides the playback request when the connection starts.
+                enable_audio_playback: false,
                 audio_playback_mode: self.audio_playback_mode.map(Into::into),
                 enable_audio_capture: false,
                 request_data: None,
@@ -520,7 +529,7 @@ mod tests {
         assert!(!config.redirected_drives[1].read_only);
     }
 
-    // oracle: mutant sanitize two distinct names to different wire names
+    // oracle: intent ffi/src/connector/INTENT.md §drive-name-collisions
     // The colliding pairs follow the drive DeviceData encoding in ironrdp-rdpdr (`DeviceAnnounceHeader::new_drive`)
     // followed by Unicode uppercase conversion; no specification defines this mapping.
     #[test]
@@ -531,6 +540,7 @@ mod tests {
         );
         assert_eq!(super::drive_wire_name("\u{c4}"), super::drive_wire_name("\u{e4}"));
         assert_eq!(super::drive_wire_name("\u{3a3}"), super::drive_wire_name("\u{3c2}"));
+        // oracle: mutant collapse distinct names to one wire name
         assert_ne!(super::drive_wire_name("Projects"), super::drive_wire_name("Project"));
     }
 
@@ -544,7 +554,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    // oracle: mutant accept a second drive with the same sanitized wire name
+    // oracle: intent ffi/src/connector/INTENT.md §drive-name-collisions
     #[test]
     fn duplicate_wire_names_are_rejected_without_changing_drives() {
         let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
