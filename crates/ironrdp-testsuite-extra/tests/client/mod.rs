@@ -1,3 +1,4 @@
+mod audio_playback;
 mod avd;
 mod cloud;
 mod config;

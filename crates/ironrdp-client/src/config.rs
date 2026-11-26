@@ -246,6 +246,12 @@ impl Config {
         self.remote_guard_mode = mode;
     }
 
+    #[cfg(all(feature = "__test", feature = "sound"))]
+    #[doc(hidden)]
+    pub fn __test_set_sound(&mut self, enabled: bool) {
+        self.channels.sound = enabled;
+    }
+
     /// Minimum interval between non-forced input batches.
     pub fn input_send_interval(&self) -> Option<Duration> {
         self.input_send_interval
