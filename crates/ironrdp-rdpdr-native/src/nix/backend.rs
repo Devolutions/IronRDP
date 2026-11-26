@@ -16,13 +16,14 @@ use nix::dir::{Dir, OwningIter};
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, renameat};
 use nix::sys::resource::{Resource, getrlimit};
-use nix::sys::stat::{FileStat, Mode, SFlag, dev_t, fstat, fstatat, mkdirat};
+use nix::sys::stat::{FileStat, Mode, SFlag, fstat, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, ftruncate, unlinkat};
 use tracing::{debug, trace, warn};
 
 use super::locks;
 use super::locks::{ByteRangeLocks, file_lock_conflict};
-use super::path::{InvalidPath, RelativePath, Root, io_to_errno};
+pub(crate) use super::path::FileIdentity;
+use super::path::{InvalidPath, RelativePath, ResolvedRoot, Root, io_to_errno, names_no_directory};
 use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
 use super::wildcard::{contains_wildcards, is_name_in_expression};
 
@@ -32,43 +33,375 @@ const MAX_OPEN_FILES: usize = 1_024;
 /// The largest read the server may request, so a single request cannot make the client allocate gigabytes.
 const MAX_READ_LENGTH: usize = 1_024 * 1_024;
 
+/// The most names kept for one file marked for deletion, however many roots it was marked through.
+const MAX_PENDING_DELETE_NAMES: usize = 4;
+
+/// Serves redirected drives, and optionally a printer, on macOS and Linux.
+///
+/// Each drive serves one directory, its root: the shared directory given to [`Self::new`], or a directory of its own given to [`Self::with_drive_root`].
+/// Server-supplied paths are resolved beneath the root of the drive the request addresses and never follow symbolic links, so the server cannot reach files outside it.
+///
+/// A file ID names a file only through the drive it was opened through.
+/// Through another drive it is answered like a file ID that was never opened, and the request changes nothing.
+///
+/// The limits on open files and byte-range locks apply to all drives together.
+///
+/// [Drive roots on macOS and Linux](crate#drive-roots-on-macos-and-linux) describes how roots are resolved, when a root is unusable, and what holds between drives that reach the same files.
 #[derive(Debug)]
 pub struct NixRdpdrBackend {
     file_id: u32,
-    /// The shared directory every server-supplied path resolves beneath.
-    file_base: String,
-    /// INVARIANT: holds at most `max_open_files` entries.
+    roots: DriveRoots,
+    /// The open files of every drive, by file ID.
+    ///
+    /// INVARIANT: a file is added only while the entries and the roots that hold their directory open together number fewer than `max_open_files`.
     open_files: HashMap<u32, OpenFile>,
-    /// Bounds the open files, so the server cannot exhaust the descriptors of the client process.
+    /// Bounds the open files and the roots that hold their directory open together, so the server cannot exhaust the descriptors of the client process.
     ///
     /// A quarter of the soft descriptor limit, at most `MAX_OPEN_FILES`.
     /// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
+    /// A root that holds its directory open holds one, and takes the place of one open file.
     /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
+    /// The roots take at most half the places, as [`DriveRoots::record_root`] bounds them, so at least half are left to open files.
     max_open_files: usize,
-    /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open), each with the name it was marked through.
+    /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open), each with the names it was marked through, from the one marked first to the one marked last.
     ///
-    /// That name is removed rather than the path of whichever handle closes last, so a file with several hard links loses the link the server marked.
-    /// [MS-FSA] marks each link separately, while one name is kept per file here: marking through another link replaces it, and every link of a marked file refuses new opens.
+    /// A marked name is removed rather than the path of whichever handle closes last, so a file with several hard links loses a link the server marked.
+    /// [MS-FSA] marks each link separately, while a file loses one name here, and every link of a marked file refuses new opens.
+    /// While every drive serves the shared directory, one name is kept per file: marking through another link or another drive replaces it.
+    /// Once a drive has a root of its own, one name is kept for each root the file was marked through, because the root it was marked through last may be unable to remove a file that another root can.
+    /// A mark then replaces only the name marked before through the same root, as [`DriveRoots::use_the_same_root`] decides, and becomes the name marked last.
+    /// A file that already has `MAX_PENDING_DELETE_NAMES` names of other roots loses the one marked first, so it keeps the names marked last.
+    /// The names are tried from the last to the first when the last handle closes, and the first that removes the file ends the delete.
+    ///
+    /// INVARIANT: a file is kept only with a name, so a file is marked exactly while it has an entry.
+    ///
+    /// INVARIANT: a file has at most `MAX_PENDING_DELETE_NAMES` names, each of a different root: at most one of the shared directory, and one of each drive with a root of its own.
+    /// One open handle keeps every name of its file, each with a path and the directories on it, so a name for every root would let the server keep as many names as there are roots for each file it holds open.
+    /// A marked file has an open handle, so the names of all files together number at most `MAX_PENDING_DELETE_NAMES` times the limit on open files.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/d142c93a-72bc-4b05-9d96-8e00371c3308
-    pending_deletes: HashMap<FileIdentity, RelativePath>,
+    pending_deletes: HashMap<FileIdentity, Vec<PendingDelete>>,
+    /// The locks on the files of every drive, so one drive sees the locks taken through another on the same file.
+    ///
+    /// UNTESTED: one table holds the locks of every drive, so its limit on held locks bounds them together.
+    /// A table for each drive would let the server hold that many locks for each drive it is given.
+    /// Filling the table takes seconds, so the tests show only that the limit on waiting requests is shared; after splitting the table, check the limit on held locks across two drives by hand.
     locks: ByteRangeLocks,
     /// Print-job handling for the virtual printer, when one is announced.
     printer: Option<Printer>,
 }
 
 impl Default for NixRdpdrBackend {
+    /// Creates a backend without a shared directory, which serves only the drives given a root with [`Self::with_drive_root`].
     fn default() -> Self {
         Self::new(String::new())
     }
 }
 
+/// The directories the drives serve.
+///
+/// While no drive has a root of its own, every drive serves the shared directory, which is opened by path for each request.
+/// From the first such root on, every root is resolved once and holds the directory it names open, the shared directory included.
+/// Roots that name the same directory each hold it open, through their own path.
+/// A root beyond the bound on roots held open, which [`Self::record_root`] sets, is resolved too, but holds nothing open, like a root whose directory cannot be read.
+///
+/// UNTESTED: a root that holds its directory open keeps one descriptor between requests, the one in its `directory`.
+/// A root that did not resolve keeps none, like the shared directory while no drive has a root of its own.
+/// Neither does a root whose directory could not be opened to be read or one beyond the bound on roots held open, whose walks close their descriptors before the root is stored.
+/// `max_open_files` counts one open file for each root that holds its directory open, so any other descriptor kept for a root would come out of the quarter it leaves to the rest of the process.
+/// The tests count the places taken under the limit, not descriptors, which cannot be counted reliably in the one process they share.
+/// After changing how roots are opened or held, check that each root that holds its directory open keeps exactly the descriptor in its `directory`, and that a root that cannot be read or lies beyond the bound keeps none.
+#[derive(Debug)]
+struct DriveRoots {
+    /// The path of the shared directory, which is the root of every device without a root of its own, or empty when there is none.
+    ///
+    /// Opening an empty path fails, so such a device is served nothing rather than the working directory.
+    shared_path: String,
+    /// The shared directory as resolved when the first drive was given a root of its own, or `None` before that and when there is no shared directory.
+    shared: Option<ConfiguredRoot>,
+    /// The root of each device that does not serve the shared directory.
+    drives: HashMap<u32, ConfiguredRoot>,
+}
+
+/// A root as its path resolved when it was configured.
+#[derive(Debug)]
+struct ConfiguredRoot {
+    /// The path the root was configured with, which is only logged once it is resolved.
+    path: String,
+    /// The directory the path named, as far as its walk showed.
+    ///
+    /// A root that does not hold its directory open has one too, because the paths of the other roots are checked against it all the same.
+    identity: RootIdentity,
+    /// The directory the path named, opened through that path, or `None` when the walk failed, the directory could not be opened to be read, or the root lies beyond the bound on roots held open.
+    ///
+    /// A refused root keeps its directory open too, because replacing the root that refuses it makes it usable again without resolving its path again.
+    directory: Option<Root>,
+    /// The directories whose entries decide what the path names, because a symbolic link was followed or a `..` step taken in or below them.
+    deciding_directories: HashSet<FileIdentity>,
+    /// Whether a server could have changed what the path names.
+    ///
+    /// One of `deciding_directories` is the directory of a configured root, or `deciding_directories` is not empty while the directory of a configured root is undetermined.
+    is_refused: bool,
+}
+
+/// The directory a root path names, as far as its walk showed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootIdentity {
+    /// The path named this directory.
+    Known(FileIdentity),
+    /// The walk showed that the path names no directory a drive could serve, as [`names_no_directory`] tells.
+    NoDirectory,
+    /// The walk failed without showing which directory the path names, or whether it names one.
+    ///
+    /// The directory may exist all the same, and an earlier backend built from the same configuration may have served it.
+    Undetermined,
+}
+
+impl DriveRoots {
+    /// Whether no drive has a root of its own, so every drive serves the shared directory, which is opened by path for each request.
+    fn serve_only_the_shared_directory(&self) -> bool {
+        self.drives.is_empty()
+    }
+
+    /// The root of `device_id`, which paths in requests for that device resolve beneath.
+    ///
+    /// Once a drive has a root of its own, this resolves no path, and fails for a device that is served nothing.
+    fn of(&self, device_id: u32) -> nix::Result<RootRef<'_>> {
+        if self.serve_only_the_shared_directory() {
+            return Root::open(&self.shared_path).map(RootRef::Opened);
+        }
+        self.held(device_id).map(RootRef::Held).ok_or(Errno::ENOENT)
+    }
+
+    /// The directory `device_id` serves, as its own root holds it open, once a drive has a root of its own.
+    ///
+    /// UNTESTED: the requests of a drive use the descriptor that was opened through the root path of that drive, never the descriptor of another root that names the same directory.
+    /// A directory can be reached through several mounts, such as a read-only bind mount and its writable source, which report the same device and inode.
+    /// A descriptor shared between such roots would let a drive configured through the read-only mount write through the writable one.
+    /// The tests cannot create mounts, so after changing how descriptors are held, check that a drive given a read-only bind mount of the root of another drive refuses writes.
+    fn held(&self, device_id: u32) -> Option<&Root> {
+        let root = self.drives.get(&device_id).or(self.shared.as_ref())?;
+        root.directory.as_ref().filter(|_| !root.is_refused)
+    }
+
+    /// Whether `first` and `second` serve the same directory, so a path beneath the root of one names the same file beneath the root of the other.
+    fn serve_the_same_directory(&self, first: u32, second: u32) -> bool {
+        self.serve_only_the_shared_directory()
+            || self
+                .held(first)
+                .is_some_and(|root| self.held(second).map(Root::identity) == Some(root.identity()))
+    }
+
+    /// Whether `first` and `second` use the same root, so a name beneath it removes a file through one exactly when it does through the other.
+    ///
+    /// Every device without a root of its own uses the one root of the shared directory.
+    /// Devices with roots of their own use different roots even when those name the same directory, which each holds open through its own path.
+    fn use_the_same_root(&self, first: u32, second: u32) -> bool {
+        first == second || !self.drives.contains_key(&first) && !self.drives.contains_key(&second)
+    }
+
+    /// How many roots hold their directory open, each of which takes the place of one open file.
+    fn held_count(&self) -> usize {
+        self.shared
+            .iter()
+            .chain(self.drives.values())
+            .filter(|root| root.directory.is_some())
+            .count()
+    }
+
+    /// Resolves `path` as the root of `device_id` and holds the directory it names from now on, in place of an earlier root of that device.
+    ///
+    /// The shared directory is resolved and held with the first such root.
+    /// `max_open_files` is the limit of the backend on open files, which bounds the roots held open as [`Self::record_root`] describes.
+    fn set_drive_root(&mut self, max_open_files: usize, device_id: u32, path: &str) {
+        if self.shared.is_none() && !self.shared_path.is_empty() {
+            let shared_path = self.shared_path.clone();
+            self.record_root(max_open_files, None, &shared_path, Root::resolve(&shared_path));
+        }
+        // The earlier root of the device is released first, so the root that replaces it can take its place.
+        self.drives.remove(&device_id);
+        self.record_root(max_open_files, Some(device_id), path, Root::resolve(path));
+    }
+
+    /// Records `walk`, the outcome of resolving `path`, as the root of `device_id`, and judges every root again.
+    ///
+    /// The outcome is given rather than taken here, so a test can give one that no path produces on demand.
+    /// A walk that failed leaves the root unusable, and its directory undetermined unless the failure shows that `path` names none, as [`names_no_directory`] tells.
+    /// A walk that reached a directory it could not open to be read leaves the root unusable too, but its directory known.
+    /// A server may have been served that directory while it could be read, so the paths of the other roots are checked against it as against any other.
+    /// A root that resolved holds the directory `path` names open.
+    /// The roots hold at most half of `max_open_files` directories open, so at least half the limit is left to open files however many roots are given.
+    /// A root beyond that is recorded all the same, but holds nothing open and is unusable.
+    /// Its directory has to be known, because a server may have been served it by an earlier backend built from the same configuration, in which a root given before it named no directory yet and took no place.
+    /// The paths of the other roots are therefore checked against it as against any other.
+    /// It stays unusable when a place is freed later, because a root is resolved only when it is given.
+    /// `device_id` is `None` for the shared directory.
+    fn record_root(
+        &mut self,
+        max_open_files: usize,
+        device_id: Option<u32>,
+        path: &str,
+        walk: nix::Result<ResolvedRoot>,
+    ) {
+        let max_held_roots = max_open_files / 2;
+        let (identity, directory, deciding_directories) = match walk {
+            Ok(ResolvedRoot {
+                identity,
+                root: Ok(root),
+                deciding_directories,
+            }) => {
+                let is_held = self.held_count() < max_held_roots;
+                if !is_held {
+                    warn!(
+                        device_id,
+                        root = path,
+                        max_held_roots,
+                        "Reached the limit on drive roots held open, so nothing is served from this root"
+                    );
+                }
+                // A root that is not held is dropped here, which closes the last descriptor of its walk.
+                (
+                    RootIdentity::Known(identity),
+                    is_held.then_some(root),
+                    deciding_directories,
+                )
+            }
+            // The walk reached the directory, so it is known although nothing can be served from it.
+            Ok(ResolvedRoot {
+                identity,
+                root: Err(error),
+                deciding_directories,
+            }) => {
+                warn!(
+                    %error,
+                    device_id,
+                    root = path,
+                    "Failed to open the directory of a drive root to read it, so nothing is served from it"
+                );
+                (RootIdentity::Known(identity), None, deciding_directories)
+            }
+            Err(error) if names_no_directory(error) => {
+                warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
+                (RootIdentity::NoDirectory, None, HashSet::new())
+            }
+            // Any other failure says nothing of the path, which may name a directory that an earlier backend served.
+            // The other roots cannot be checked against a directory that is not known, so while this root is configured, each of them that followed a link or took a `..` step is refused.
+            Err(error) => {
+                warn!(
+                    %error,
+                    device_id,
+                    root = path,
+                    "Could not determine the directory of a drive root, so nothing is served from it or from a root whose path follows a symbolic link or steps back up"
+                );
+                (RootIdentity::Undetermined, None, HashSet::new())
+            }
+        };
+        let root = ConfiguredRoot {
+            path: path.to_owned(),
+            identity,
+            directory,
+            deciding_directories,
+            is_refused: false,
+        };
+        match device_id {
+            Some(device_id) => {
+                self.drives.insert(device_id, root);
+            }
+            None => self.shared = Some(root),
+        }
+        self.refuse_roots_a_server_could_redirect();
+    }
+
+    /// Refuses every root whose path followed a symbolic link or took a `..` step in or below the directory of a configured root, its own included.
+    ///
+    /// In a directory that a drive serves, and below it, a server decides what every entry is.
+    /// A root path that only descends from there ends at or below that directory whatever the server does.
+    /// A link read there, or a step back up from there, makes the end of the path depend on those entries, so the next time it is resolved it can lie anywhere.
+    /// A root is therefore usable only if its path did nothing but descend once it was in or below a configured root.
+    ///
+    /// The check needs the directory of every root a server may have been served.
+    /// While the directory of a configured root is undetermined, a link followed or a `..` step taken anywhere may lie in or below it.
+    /// Every root whose path did either is then refused too, wherever it did.
+    /// A root whose path only descended from `/` stays usable, because it ends in or below every directory it passed through, the undetermined one included.
+    ///
+    /// Every root is judged again against all of them, refused ones included, so the outcome does not depend on the order the roots were given in.
+    ///
+    /// The refusal while a directory is undetermined is tested with failures given to `record_root`, and in `tests/nix_root_descriptors.rs` with walks that run out of descriptors, in a process that test has to itself.
+    ///
+    /// UNTESTED: a link or a `..` step counts as lying below a root only when the directories walked from `/` to it include the directory of that root.
+    /// A bind mount, or on macOS a firmlink such as `/Users` for `/System/Volumes/Data/Users`, shows a directory inside a root at another path.
+    /// A link there has other directories above it, so a root reached through that link is not refused, although a server can replace the link.
+    /// The tests cannot create mounts or firmlinks, so the rule assumes there is none; after changing it, check by hand what a root given through a link below a bind mount of another root is served.
+    ///
+    /// UNTESTED: a link or a `..` step is checked against the roots of this backend only.
+    /// A link in a directory that another backend redirects under another configuration, before or beside this one, is followed like any link in local configuration, although the server of that backend can replace it.
+    /// No test runs two configurations against one tree, so after changing which directories a link is checked against, check that a root path outside the roots of the backend is still resolved as the kernel resolves it.
+    fn refuse_roots_a_server_could_redirect(&mut self) {
+        let configured = || self.shared.iter().chain(self.drives.values());
+        let directories = configured()
+            .filter_map(|root| match root.identity {
+                RootIdentity::Known(identity) => Some(identity),
+                RootIdentity::NoDirectory | RootIdentity::Undetermined => None,
+            })
+            .collect::<HashSet<_>>();
+        let is_any_undetermined = configured().any(|root| root.identity == RootIdentity::Undetermined);
+        let roots = self
+            .shared
+            .iter_mut()
+            .map(|root| (None, root))
+            .chain(self.drives.iter_mut().map(|(device_id, root)| (Some(*device_id), root)));
+        for (device_id, root) in roots {
+            let is_redirectable = !root.deciding_directories.is_disjoint(&directories);
+            // A directory that is not known cannot be told from the ones in `deciding_directories`, so it counts as one of them.
+            let may_be_redirectable = is_any_undetermined && !root.deciding_directories.is_empty();
+            let is_refused = is_redirectable || may_be_redirectable;
+            if is_refused && !root.is_refused {
+                if is_redirectable {
+                    warn!(
+                        device_id,
+                        root = root.path,
+                        "Refused a drive root whose path follows a symbolic link or steps back up inside a redirected directory, so nothing is served from it"
+                    );
+                } else {
+                    warn!(
+                        device_id,
+                        root = root.path,
+                        "Refused a drive root whose path follows a symbolic link or steps back up while the directory of another root is not determined, so nothing is served from it"
+                    );
+                }
+            }
+            root.is_refused = is_refused;
+        }
+    }
+}
+
+/// The root a request resolves beneath.
+enum RootRef<'a> {
+    /// A root held since it was configured.
+    Held(&'a Root),
+    /// The shared directory, opened for this request.
+    Opened(Root),
+}
+
+impl core::ops::Deref for RootRef<'_> {
+    type Target = Root;
+
+    fn deref(&self) -> &Root {
+        match self {
+            Self::Held(root) => root,
+            Self::Opened(root) => root,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct OpenFile {
+    /// The device the file was opened through, whose root `path` is relative to.
+    device_id: u32,
     file: std::fs::File,
     path: RelativePath,
     identity: FileIdentity,
-    /// The directories from the shared directory down to the one holding this file, as the server last reached it.
+    /// The directories from the root of the drive down to the one holding this file, as the server last reached it.
     ///
     /// A directory holding open files is found by these rather than by path, so another spelling of a name or a local rename does not hide one.
     ancestors: Vec<FileIdentity>,
@@ -80,20 +413,16 @@ struct OpenFile {
     listing: Option<DirectoryListing>,
 }
 
-/// Identifies a file independently of its name, so a rename does not lose track of it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct FileIdentity {
-    device: dev_t,
-    inode: nix::libc::ino_t,
-}
-
-impl FileIdentity {
-    pub(crate) fn of(stat: &FileStat) -> Self {
-        Self {
-            device: stat.st_dev,
-            inode: stat.st_ino,
-        }
-    }
+/// A name a file marked for deletion can be removed by: the one marked last through a root.
+#[derive(Debug)]
+struct PendingDelete {
+    /// The device the file was marked through, whose root `path` is relative to.
+    device_id: u32,
+    path: RelativePath,
+    /// The directories `path` led through when the file was marked, from the root of `device_id` down.
+    ///
+    /// INVARIANT: once a drive has a root of its own, the requests a server sends rename none of them while the delete is pending, so `path` goes on naming the file.
+    ancestors: Vec<FileIdentity>,
 }
 
 #[derive(Debug)]
@@ -180,10 +509,19 @@ impl NixRdpdrBackend {
     /// Creates a backend that serves drive requests from the `file_base` directory.
     ///
     /// Server-supplied paths are resolved beneath `file_base` and never follow symbolic links, so the server cannot reach files outside it.
+    ///
+    /// `file_base` is the shared directory: the root of every drive not given its own with [`Self::with_drive_root`].
+    /// It is opened by path for each request and never checked, so it may be relative, or missing until a request needs it.
+    /// Once a drive is given a root of its own, `file_base` is resolved and held as that root is, and has to be usable as a root is.
+    /// An empty `file_base` is no directory, so creates through such a drive fail as they do when the shared directory cannot be opened.
     pub fn new(file_base: String) -> Self {
         Self {
             file_id: 0,
-            file_base,
+            roots: DriveRoots {
+                shared_path: file_base,
+                shared: None,
+                drives: HashMap::new(),
+            },
             open_files: HashMap::new(),
             max_open_files: match getrlimit(Resource::RLIMIT_NOFILE) {
                 Ok((soft_limit, _)) => usize::try_from(soft_limit / 4)
@@ -212,7 +550,16 @@ impl NixRdpdrBackend {
         if open_file.delete_on_close {
             match holds_entries(&open_file.file) {
                 Ok(false) => {
-                    self.pending_deletes.insert(open_file.identity, open_file.path);
+                    mark_for_deletion(
+                        &self.roots,
+                        &mut self.pending_deletes,
+                        open_file.identity,
+                        PendingDelete {
+                            device_id: open_file.device_id,
+                            path: open_file.path,
+                            ancestors: open_file.ancestors,
+                        },
+                    );
                 }
                 Ok(true) => trace!("Kept a directory opened with delete on close that is not empty"),
                 Err(error) => warn!(%error, "Delete on close check error"),
@@ -222,11 +569,31 @@ impl NixRdpdrBackend {
             .open_files
             .values()
             .any(|other| other.identity == open_file.identity);
-        if !still_open
-            && let Some(path) = self.pending_deletes.remove(&open_file.identity)
-            && let Err(error) = remove_file(&self.file_base, &path, open_file.identity)
-        {
-            warn!(%error, "Delete on close error");
+        if !still_open && let Some(mut names) = self.pending_deletes.remove(&open_file.identity) {
+            // The name marked last is tried first, and an earlier one only after every name marked since failed, so the file loses one name.
+            // Each name is resolved beneath the root of its own device, and removed only while it still names this file.
+            //
+            // UNTESTED: a name that cannot be removed beneath the root of its device leaves the delete to the names marked before it through other roots.
+            // One directory can be the root of a drive through a read-only mount and of another drive through a writable one, and a file marked through both has to be deleted even when the read-only drive marked it last.
+            // The tests cannot create mounts, so they make a name fail by renaming a directory on its path locally, which fails before the name would be unlinked.
+            // After changing this loop, check that a file marked through a writable root and then through a read-only bind mount of it is removed when its last handle closes.
+            //
+            // UNTESTED: a file that no name removes logs one warning, and a failed name with earlier ones left to try is only traced.
+            // The server decides how many drives it marks a file through, so a warning for each name would let it fill the log.
+            // No test reads the log, so after changing this loop, check that only the failure of the last name tried warns.
+            while let Some(name) = names.pop() {
+                let removed = self
+                    .roots
+                    .of(name.device_id)
+                    .and_then(|root| remove_file(&root, &name.path, open_file.identity));
+                match removed {
+                    Ok(()) => break,
+                    Err(error) if !names.is_empty() => {
+                        trace!(%error, device_id = name.device_id, "Failed to delete a file by one of its marked names");
+                    }
+                    Err(error) => warn!(%error, device_id = name.device_id, "Delete on close error"),
+                }
+            }
         }
         responses
     }
@@ -250,6 +617,25 @@ impl NixRdpdrBackend {
         for file_id in file_ids {
             self.close_file(file_id);
         }
+    }
+
+    /// Serves the drive announced as `device_id` from the `root` directory instead of the shared directory.
+    ///
+    /// `root` is resolved here, once, and the directory it names is held open until the backend is dropped, so every root has to be given before the backend serves a request.
+    /// The drive then serves that directory whatever becomes of its path.
+    /// `root` must be an absolute path without `.` or `..` components, and may lead through symbolic links that lie outside every root of the backend.
+    /// A `..` in the target of such a link must be taken outside every root as well.
+    /// A root reached through a link is unusable all the same while the directory of another root could not be determined.
+    /// An unusable root, as [Drive roots on macOS and Linux](crate#drive-roots-on-macos-and-linux) defines it, is logged and leaves the drive configured but served nothing.
+    /// Roots are checked against each other in whichever order they are given, so a root given later can make an earlier one unusable.
+    /// A root given again for the same device replaces the earlier one.
+    #[must_use]
+    pub fn with_drive_root(mut self, device_id: u32, root: String) -> Self {
+        // UNTESTED: every root is resolved before the backend serves its first request, because the factory gives the roots before it returns the backend.
+        // A root resolved between requests would be walked through whatever a server had made of its path through an enclosing drive, and could race requests through that drive.
+        // Nothing stops a caller that holds the backend from giving a root later, so when adding a way to configure roots, check that it runs before the backend is handed to the channel.
+        self.roots.set_drive_root(self.max_open_files, device_id, &root);
+        self
     }
 
     /// Accepts print jobs for the virtual printer announced as `device_id` and sends them to
@@ -280,14 +666,32 @@ impl_as_any!(NixRdpdrBackend);
 /// device IDs must be unique and nonzero, and the printer takes the highest ID
 /// no drive uses; [`RdpdrBackendFactory::build_rdpdr_backend`] reports a
 /// configuration that breaks this with a [`NixRdpdrBackendFactoryError`].
-#[derive(Debug, Clone)]
+///
+/// A drive added with [`Self::with_drive`] serves the shared directory given to [`Self::new`], and a drive added with [`Self::with_drive_root`] serves a directory of its own.
+/// The default factory has no shared directory, for a configuration where every drive has its own root.
+///
+/// The roots are resolved each time a backend is built, as [`NixRdpdrBackend::with_drive_root`] describes, and the shared directory with them once a drive has its own root.
+/// An unusable root does not fail the build: its drive is announced and served nothing.
+/// Without a drive that has its own root, no directory is opened or checked when a backend is built.
+#[derive(Debug, Clone, Default)]
 pub struct NixRdpdrBackendFactory {
     file_base: String,
-    drives: Vec<(u32, String)>,
+    drives: Vec<Drive>,
     printer: Option<(String, PrintTarget)>,
 }
 
+#[derive(Debug, Clone)]
+struct Drive {
+    device_id: u32,
+    name: String,
+    /// The directory the drive serves, or `None` for the shared directory.
+    root: Option<String>,
+}
+
 impl NixRdpdrBackendFactory {
+    /// Creates a factory whose drives serve the `file_base` directory unless they are given their own root.
+    ///
+    /// An empty `file_base` is no directory, as for [`NixRdpdrBackend::new`].
     pub fn new(file_base: String) -> Self {
         Self {
             file_base,
@@ -296,9 +700,28 @@ impl NixRdpdrBackendFactory {
         }
     }
 
+    /// Announces a drive called `name` that serves the shared directory.
     #[must_use]
     pub fn with_drive(mut self, device_id: u32, name: String) -> Self {
-        self.drives.push((device_id, name));
+        self.drives.push(Drive {
+            device_id,
+            name,
+            root: None,
+        });
+        self
+    }
+
+    /// Announces a drive called `name` that serves the `root` directory instead of the shared directory.
+    ///
+    /// `root` is resolved when a backend is built and has to be usable as [`NixRdpdrBackend::with_drive_root`] requires, or the drive is served nothing.
+    /// Several drives may serve the same directory, or directories inside one another.
+    #[must_use]
+    pub fn with_drive_root(mut self, device_id: u32, name: String, root: String) -> Self {
+        self.drives.push(Drive {
+            device_id,
+            name,
+            root: Some(root),
+        });
         self
     }
 
@@ -315,19 +738,26 @@ const DEFAULT_PRINTER_DEVICE_ID: u32 = u32::MAX - 1;
 impl RdpdrBackendFactory for NixRdpdrBackendFactory {
     fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
         let mut device_ids = HashSet::with_capacity(self.drives.len());
-        for (device_id, name) in &self.drives {
-            if *device_id == 0 {
+        for drive in &self.drives {
+            if drive.device_id == 0 {
                 return Err(Box::new(NixRdpdrBackendFactoryError::ReservedDeviceId));
             }
-            if !is_valid_device_name(name) {
-                return Err(Box::new(NixRdpdrBackendFactoryError::InvalidDriveName(*device_id)));
+            if !is_valid_device_name(&drive.name) {
+                return Err(Box::new(NixRdpdrBackendFactoryError::InvalidDriveName(drive.device_id)));
             }
-            if !device_ids.insert(*device_id) {
-                return Err(Box::new(NixRdpdrBackendFactoryError::DuplicateDeviceId(*device_id)));
+            if !device_ids.insert(drive.device_id) {
+                return Err(Box::new(NixRdpdrBackendFactoryError::DuplicateDeviceId(
+                    drive.device_id,
+                )));
             }
         }
 
         let mut backend = NixRdpdrBackend::new(self.file_base.clone());
+        for drive in &self.drives {
+            if let Some(root) = &drive.root {
+                backend = backend.with_drive_root(drive.device_id, root.clone());
+            }
+        }
         let mut printer = None;
         if let Some((name, target)) = &self.printer {
             if !is_valid_device_name(name) {
@@ -351,7 +781,7 @@ impl RdpdrBackendFactory for NixRdpdrBackendFactory {
         let drives = self
             .drives
             .iter()
-            .map(|(id, name)| RdpdrDrive::new(*id, name.clone()))
+            .map(|drive| RdpdrDrive::new(drive.device_id, drive.name.clone()))
             .collect();
         let mut product = RdpdrBackendProduct::new(Box::new(backend), drives);
         if let Some(printer) = printer {
@@ -494,7 +924,7 @@ pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWrite
     let length = u64::try_from(req_inner.write_data.len()).unwrap_or(u64::MAX);
     // [MS-FSA] 2.1.5.4 refuses a write into a range another handle locked, or that any shared lock covers, after a write of no bytes has already succeeded.
     if length != 0
-        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+        && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend
                 .locks
                 .conflicts(open_file.identity, file_id, req_inner.offset, length, true, false)
@@ -561,7 +991,7 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
     let file_id = req_inner.device_io_request.file_id;
     // [MS-FSA] 2.1.5.3 refuses a read from a range another handle locked exclusively, after a read of no bytes has already succeeded.
     if req_inner.length != 0
-        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+        && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend.locks.conflicts(
                 open_file.identity,
                 file_id,
@@ -629,7 +1059,7 @@ pub(crate) fn lock_control(
     req_inner: ServerDriveLockControlRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = req_inner.device_io_request.file_id;
-    let checked = match backend.open_files.get(&file_id) {
+    let checked = match file_for_request(&backend.open_files, &req_inner.device_io_request) {
         None => {
             warn!("No such file");
             Err(NtStatus::NO_SUCH_FILE)
@@ -673,7 +1103,12 @@ pub(crate) fn lock_control(
 pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {
     // A failed delete on close is only logged, and the close still reports success.
     // [MS-FSA] 2.1.5.5 Server Requests Closing an Open defines no failure status, and Windows does not report a failed delete on close to the caller closing the handle either.
-    let lock_responses = backend.close_file(req_inner.device_io_request.file_id);
+    // A file ID that names no file of this device closes nothing, so it cannot close a file of another device.
+    let lock_responses = if file_for_request(&backend.open_files, &req_inner.device_io_request).is_some() {
+        backend.close_file(req_inner.device_io_request.file_id)
+    } else {
+        Vec::new()
+    };
     let res = RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
         device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
     });
@@ -686,7 +1121,7 @@ pub(crate) fn query_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.open_files.get(&req_inner.device_io_request.file_id) {
+    match file_for_request(&backend.open_files, &req_inner.device_io_request) {
         Some(OpenFile {
             file, path, identity, ..
         }) => match file.metadata() {
@@ -774,7 +1209,7 @@ pub(crate) fn query_volume_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryVolumeInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.open_files.get(&req_inner.device_io_request.file_id) {
+    match file_for_request(&backend.open_files, &req_inner.device_io_request) {
         Some(OpenFile { file, .. }) => {
             if let Ok(statvfs) = nix::sys::statvfs::fstatvfs(file.as_fd()) {
                 if FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION == req_inner.fs_info_class_lvl {
@@ -892,15 +1327,37 @@ pub(crate) fn set_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    let file_id = req_inner.device_io_request.file_id;
+    // A path names a file only beneath the root of its drive, so a rename cannot give the new name to a handle of a drive that serves another directory.
+    // The file is therefore not renamed while such a drive holds it open, through any of its hard links.
+    // A handle on the root of its own drive is no reason to refuse: its path is empty and names that root whatever the directory is called, so the rename leaves it no stale name.
+    // Remote file managers keep such handles open, and refusing would keep the enclosing drive from renaming the root of an inner drive while only that root is open.
+    let is_open_through_another_directory = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
+        && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
+            backend.open_files.values().any(|other| {
+                other.identity == open_file.identity
+                    && other.path.file_name().is_some()
+                    && !backend
+                        .roots
+                        .serve_the_same_directory(other.device_id, open_file.device_id)
+            })
+        });
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
+    // A directory that led to a file marked for deletion is refused like one holding open files, because the file is deleted by a name it was marked through, each of which has to go on naming it.
+    // Only a backend with a drive that has a root of its own refuses it.
+    // With only a shared directory the open handles alone decide, because a handle left on the marked link keeps those directories in place and a handle left on another hard link does not.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
-        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+        && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend.pending_deletes.contains_key(&open_file.identity)
                 || backend
                     .open_files
                     .values()
                     .any(|other| other.ancestors.contains(&open_file.identity))
+                || !backend.roots.serve_only_the_shared_directory()
+                    && backend
+                        .pending_deletes
+                        .values()
+                        .flatten()
+                        .any(|name| name.ancestors.contains(&open_file.identity))
         });
     // A rename target that is open cannot be replaced, so the open files are collected before one of them is borrowed mutably.
     let open_identities = if matches!(req_inner.set_buffer, FileInformationClass::Rename(_)) {
@@ -913,27 +1370,40 @@ pub(crate) fn set_information(
         HashSet::new()
     };
     let mut renamed = None;
-    let status = match backend.open_files.get_mut(&file_id) {
+    let status = match file_for_request_mut(&mut backend.open_files, &req_inner.device_io_request) {
         Some(open_file) => match &req_inner.set_buffer {
             // [MS-FSA] 2.1.5.15.3 FileDispositionInformation and 2.1.5.15.12 FileRenameInformation refuse a handle without DELETE access before any other check.
             FileInformationClass::Rename(_) | FileInformationClass::Disposition(_) if !open_file.may_delete => {
                 NtStatus::ACCESS_DENIED
             }
+            FileInformationClass::Rename(_) if is_open_through_another_directory => NtStatus::SHARING_VIOLATION,
             FileInformationClass::Rename(_) if rename_denied => NtStatus::ACCESS_DENIED,
-            // The shared directory itself is no name to rename to.
+            // The root of a drive is no name to rename to.
             FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name)
                 .and_then(|to| to.file_name().is_some().then_some(to).ok_or(InvalidPath))
             {
-                Ok(to) => match rename(
-                    &backend.file_base,
-                    open_file,
-                    &to,
-                    info.replace_if_exists == Boolean::True,
-                    &backend.pending_deletes,
-                    &open_identities,
-                ) {
+                Ok(to) => match backend
+                    .roots
+                    .of(open_file.device_id)
+                    .map_err(status_from_errno)
+                    .and_then(|root| {
+                        rename(
+                            &root,
+                            open_file,
+                            &to,
+                            info.replace_if_exists == Boolean::True,
+                            &backend.pending_deletes,
+                            &open_identities,
+                        )
+                    }) {
                     Ok(ancestors) => {
-                        renamed = Some((open_file.identity, open_file.path.clone(), to, ancestors));
+                        renamed = Some((
+                            open_file.device_id,
+                            open_file.identity,
+                            open_file.path.clone(),
+                            to,
+                            ancestors,
+                        ));
                         NtStatus::SUCCESS
                     }
                     Err(status) => {
@@ -949,7 +1419,12 @@ pub(crate) fn set_information(
             // The allocation size is only a hint, so there is nothing to do.
             FileInformationClass::Allocation(_) => NtStatus::SUCCESS,
             FileInformationClass::Disposition(info) => {
-                match set_delete_pending(open_file, &mut backend.pending_deletes, info.delete_pending != 0) {
+                match set_delete_pending(
+                    &backend.roots,
+                    open_file,
+                    &mut backend.pending_deletes,
+                    info.delete_pending != 0,
+                ) {
                     Ok(()) => NtStatus::SUCCESS,
                     Err(status) => {
                         trace!(?status, "Set delete pending failed");
@@ -977,13 +1452,19 @@ pub(crate) fn set_information(
     // Every handle opened through the renamed link follows it, so a later delete removes this file and not whatever takes the old name.
     // A handle whose path no longer names the file was opened through that link, possibly spelled differently on a case-insensitive filesystem.
     // A handle opened through another hard link of the file still finds it at its path, and keeps that link.
-    if let Some((identity, from, to, ancestors)) = renamed {
-        for open_file in backend
-            .open_files
-            .values_mut()
-            .filter(|open_file| open_file.identity == identity)
-        {
-            if open_file.path == from || !names_file(&backend.file_base, &open_file.path, identity) {
+    // Only the handles of drives that serve the same directory as the renaming drive take the new path, which names the file beneath the root of each of them.
+    // The only other handle a rename leaves on the file is one on the root of a drive that serves another directory, since a rename is refused while such a drive holds the file open any other way.
+    // That handle keeps its empty path, and takes none of the directories that lead to the new name, which lie beneath the root of the renaming drive and not beneath its own.
+    if let Some((device_id, identity, from, to, ancestors)) = renamed {
+        let root = backend.roots.of(device_id);
+        for open_file in backend.open_files.values_mut().filter(|open_file| {
+            open_file.identity == identity && backend.roots.serve_the_same_directory(open_file.device_id, device_id)
+        }) {
+            if open_file.path == from
+                || !root
+                    .as_ref()
+                    .is_ok_and(|root| names_file(root, &open_file.path, identity))
+            {
                 open_file.path = to.clone();
                 open_file.ancestors = ancestors.clone();
             }
@@ -1005,16 +1486,15 @@ pub(crate) fn set_information(
 ///
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/87f86c9b-6c2a-4803-84b7-131a74a434fa
 fn rename(
-    file_base: &str,
+    root: &Root,
     open_file: &OpenFile,
     to: &RelativePath,
     replace_if_exists: bool,
-    pending_deletes: &HashMap<FileIdentity, RelativePath>,
+    pending_deletes: &HashMap<FileIdentity, Vec<PendingDelete>>,
     open_identities: &HashSet<FileIdentity>,
 ) -> Result<Vec<FileIdentity>, NtStatus> {
-    let root = Root::open(file_base).map_err(status_from_errno)?;
-    let (from_parent, from_name) = open_file.path.open_parent(&root).map_err(status_from_parent_errno)?;
-    let (to_parent, to_name, to_ancestors) = to.open_parent_with_ancestors(&root).map_err(status_from_parent_errno)?;
+    let (from_parent, from_name) = open_file.path.open_parent(root).map_err(status_from_parent_errno)?;
+    let (to_parent, to_name, to_ancestors) = to.open_parent_with_ancestors(root).map_err(status_from_parent_errno)?;
     let to_ancestors = to_ancestors.iter().map(FileIdentity::of).collect::<Vec<_>>();
     if to_ancestors
         .iter()
@@ -1080,15 +1560,16 @@ fn contains_entry(directory: BorrowedFd<'_>, name: &str) -> nix::Result<bool> {
 ///
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0
 fn set_delete_pending(
+    roots: &DriveRoots,
     open_file: &OpenFile,
-    pending_deletes: &mut HashMap<FileIdentity, RelativePath>,
+    pending_deletes: &mut HashMap<FileIdentity, Vec<PendingDelete>>,
     delete_pending: bool,
 ) -> Result<(), NtStatus> {
     if !delete_pending {
         pending_deletes.remove(&open_file.identity);
         return Ok(());
     }
-    // The shared directory cannot be removed through the share, and a mark on it would refuse every create in it until its handles close.
+    // The root of a drive cannot be removed through the drive, and a mark on it would refuse every create in it until its handles close.
     if open_file.path.file_name().is_none() {
         return Err(NtStatus::ACCESS_DENIED);
     }
@@ -1098,8 +1579,36 @@ fn set_delete_pending(
     if holds_entries(&open_file.file).map_err(status_from_errno)? {
         return Err(NtStatus::DIRECTORY_NOT_EMPTY);
     }
-    pending_deletes.insert(open_file.identity, open_file.path.clone());
+    mark_for_deletion(
+        roots,
+        pending_deletes,
+        open_file.identity,
+        PendingDelete {
+            device_id: open_file.device_id,
+            path: open_file.path.clone(),
+            ancestors: open_file.ancestors.clone(),
+        },
+    );
     Ok(())
+}
+
+/// Marks the file `identity` for deletion by `name`, which becomes the name it was marked through last.
+fn mark_for_deletion(
+    roots: &DriveRoots,
+    pending_deletes: &mut HashMap<FileIdentity, Vec<PendingDelete>>,
+    identity: FileIdentity,
+    name: PendingDelete,
+) {
+    let names = pending_deletes.entry(identity).or_default();
+    // A name marked through the same root is replaced, because the new name is as removable as it is.
+    // A different root may be able to remove the file where this one cannot, so the names marked through other roots are kept.
+    // With only a shared directory every device uses the one root, so the new name is the only one.
+    names.retain(|earlier| !roots.use_the_same_root(earlier.device_id, name.device_id));
+    // The names are kept from the one marked first to the one marked last, so the first makes room for the new one.
+    if MAX_PENDING_DELETE_NAMES <= names.len() {
+        names.remove(0);
+    }
+    names.push(name);
 }
 
 /// Whether `file` is a directory with entries, which cannot be marked for deletion.
@@ -1162,19 +1671,15 @@ fn status_from_parent_errno(error: Errno) -> NtStatus {
 }
 
 /// Whether `path` still names the file `identity`.
-fn names_file(file_base: &str, path: &RelativePath, identity: FileIdentity) -> bool {
-    Root::open(file_base)
-        .and_then(|root| {
-            let (parent, name) = path.open_parent(&root)?;
-            fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)
-        })
+fn names_file(root: &Root, path: &RelativePath, identity: FileIdentity) -> bool {
+    path.open_parent(root)
+        .and_then(|(parent, name)| fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW))
         .is_ok_and(|stat| FileIdentity::of(&stat) == identity)
 }
 
 /// Removes the file or empty directory `path` names, unless that name now refers to another file than `identity`.
-fn remove_file(file_base: &str, path: &RelativePath, identity: FileIdentity) -> nix::Result<()> {
-    let root = Root::open(file_base)?;
-    let (parent, name) = path.open_parent(&root)?;
+fn remove_file(root: &Root, path: &RelativePath, identity: FileIdentity) -> nix::Result<()> {
+    let (parent, name) = path.open_parent(root)?;
     let stat = fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
     if FileIdentity::of(&stat) != identity {
         return Err(Errno::ESTALE);
@@ -1262,7 +1767,7 @@ pub(crate) fn query_directory(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryDirectoryRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    let entry = match backend.open_files.get_mut(&req_inner.device_io_request.file_id) {
+    let entry = match file_for_request_mut(&mut backend.open_files, &req_inner.device_io_request) {
         None => {
             warn!("No file to query directory");
             Err(NtStatus::NO_SUCH_FILE)
@@ -1286,13 +1791,19 @@ pub(crate) fn query_directory(
             open_file.listing = None;
             match RelativePath::parse_query(&req_inner.path) {
                 // Only a missing name or an empty listing is no match; any other error is reported, so the server does not take it for an empty directory.
-                Ok((directory, pattern)) => match start_query(&backend.file_base, open_file, &directory, pattern) {
-                    Ok(entry) => entry.ok_or(NtStatus::NO_SUCH_FILE),
-                    Err(error) => {
-                        trace!(%error, "Initial query directory failed");
-                        Err(status_from_errno(error))
+                Ok((directory, pattern)) => {
+                    match backend
+                        .roots
+                        .of(open_file.device_id)
+                        .and_then(|root| start_query(&root, open_file, &directory, pattern))
+                    {
+                        Ok(entry) => entry.ok_or(NtStatus::NO_SUCH_FILE),
+                        Err(error) => {
+                            trace!(%error, "Initial query directory failed");
+                            Err(status_from_errno(error))
+                        }
                     }
-                },
+                }
                 Err(InvalidPath) => {
                     trace!(path = ?req_inner.path, "Rejected an invalid query path");
                     Err(NtStatus::OBJECT_NAME_INVALID)
@@ -1304,13 +1815,12 @@ pub(crate) fn query_directory(
 
     /// Returns the first match for `pattern` in `directory`, where a pattern with wildcards enumerates the matching entries.
     fn start_query(
-        file_base: &str,
+        root: &Root,
         open_file: &mut OpenFile,
         directory: &RelativePath,
         pattern: &str,
     ) -> nix::Result<Option<DirectoryEntry>> {
-        let root = Root::open(file_base)?;
-        let opened = directory.open_directory(&root)?;
+        let opened = directory.open_directory(root)?;
         if contains_wildcards(pattern) {
             let filter = (pattern != "*").then(|| pattern.to_owned());
             let mut listing = DirectoryListing::open(opened, directory.file_name().is_none(), filter)?;
@@ -1353,12 +1863,29 @@ pub(crate) fn create_drive(
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = backend.next_file_id();
 
-    let opened = if backend.max_open_files <= backend.open_files.len() {
+    let opened = if backend.max_open_files <= backend.open_files.len().saturating_add(backend.roots.held_count()) {
         warn!("Rejected a create request beyond the open file limit");
         Err(NtStatus::INSUFFICIENT_RESOURCES)
     } else {
         match RelativePath::parse(&req_inner.path) {
-            Ok(path) => open_file(&backend.file_base, &req_inner, &path, &backend.pending_deletes)
+            Ok(path) => backend
+                .roots
+                .of(req_inner.device_io_request.device_id)
+                .map_err(|error| {
+                    if backend.roots.serve_only_the_shared_directory() {
+                        warn!(%error, "Open drive root error");
+                    } else {
+                        // UNTESTED: once roots are held, a create through a drive that is served nothing logs nothing above `trace!`.
+                        // An unusable root was logged with a warning when it was configured, and the server decides how many creates it sends, so a warning here would let it fill the log.
+                        // No test reads the log, so after changing this, check that only a shared directory opened for each request warns.
+                        trace!(
+                            device_id = req_inner.device_io_request.device_id,
+                            "Rejected a create through a drive that is served nothing"
+                        );
+                    }
+                    NtStatus::UNSUCCESSFUL
+                })
+                .and_then(|root| open_file(&root, &req_inner, &path, &backend.pending_deletes))
                 .map(|(file, identity, ancestors)| (file, path, identity, ancestors)),
             Err(InvalidPath) => {
                 trace!(path = ?req_inner.path, "Rejected an invalid create path");
@@ -1373,6 +1900,7 @@ pub(crate) fn create_drive(
             backend.open_files.insert(
                 file_id,
                 OpenFile {
+                    device_id: req_inner.device_io_request.device_id,
                     file,
                     path,
                     identity,
@@ -1400,19 +1928,15 @@ pub(crate) fn create_drive(
     }
 }
 
-/// Opens or creates `path` beneath the shared directory as `req` asks, and returns it with its identity and the directories leading to it.
+/// Opens or creates `path` beneath `root` as `req` asks, and returns it with its identity and the directories leading to it.
 ///
 /// A file marked for deletion is refused before it is overwritten, so a failed open leaves its contents intact.
 fn open_file(
-    file_base: &str,
+    root: &Root,
     req: &DeviceCreateRequest,
     path: &RelativePath,
-    pending_deletes: &HashMap<FileIdentity, RelativePath>,
+    pending_deletes: &HashMap<FileIdentity, Vec<PendingDelete>>,
 ) -> Result<(std::fs::File, FileIdentity, Vec<FileIdentity>), NtStatus> {
-    let root = Root::open(file_base).map_err(|error| {
-        warn!(%error, "Open shared directory error");
-        NtStatus::UNSUCCESSFUL
-    })?;
     // [MS-SMB2] 2.2.13 SMB2 CREATE Request makes any disposition but the six it lists invalid.
     if !matches!(
         req.create_disposition,
@@ -1444,7 +1968,7 @@ fn open_file(
         warn!("Rejected FILE_DELETE_ON_CLOSE without DELETE access");
         return Err(NtStatus::INVALID_PARAMETER);
     }
-    let (parent, name, ancestors) = path.open_parent_with_ancestors(&root).map_err(|error| {
+    let (parent, name, ancestors) = path.open_parent_with_ancestors(root).map_err(|error| {
         trace!(%error, ?path, "Open parent directory failed");
         status_from_parent_errno(error)
     })?;
@@ -1478,9 +2002,9 @@ fn open_file(
                     NtStatus::OBJECT_NAME_COLLISION
                 });
             }
-            // The shared directory cannot be removed through the share, as on the Windows backend.
+            // The root of a drive cannot be removed through the drive, as on the Windows backend.
             if delete_on_close && path.file_name().is_none() {
-                trace!("Refused to delete the shared directory on close");
+                trace!("Refused to delete a drive root on close");
                 return Err(NtStatus::ACCESS_DENIED);
             }
             OFlag::O_RDONLY | OFlag::O_DIRECTORY
@@ -1579,13 +2103,32 @@ fn open_file(
     Ok((std::fs::File::from(file), identity, ancestors))
 }
 
+/// Returns the file `request` names, which is one opened through the device the request addresses.
+///
+/// A file ID used through another device names nothing, like one that was never opened, so the server cannot reach the files of another drive or learn which IDs they hold.
+fn file_for_request<'a>(open_files: &'a HashMap<u32, OpenFile>, request: &DeviceIoRequest) -> Option<&'a OpenFile> {
+    open_files
+        .get(&request.file_id)
+        .filter(|open_file| open_file.device_id == request.device_id)
+}
+
+/// Like [`file_for_request`], for a request that changes the file.
+fn file_for_request_mut<'a>(
+    open_files: &'a mut HashMap<u32, OpenFile>,
+    request: &DeviceIoRequest,
+) -> Option<&'a mut OpenFile> {
+    open_files
+        .get_mut(&request.file_id)
+        .filter(|open_file| open_file.device_id == request.device_id)
+}
+
 pub(crate) fn process_dependent_file(
     backend: &mut NixRdpdrBackend,
     request: DeviceIoRequest,
     error_fx: impl Fn(DeviceIoRequest) -> PduResult<Vec<SvcMessage>>,
     fx: impl Fn(&mut std::fs::File, DeviceIoRequest) -> PduResult<Vec<SvcMessage>>,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.open_files.get_mut(&request.file_id) {
+    match file_for_request_mut(&mut backend.open_files, &request) {
         None => error_fx(request),
         Some(open_file) => fx(&mut open_file.file, request),
     }
@@ -1593,6 +2136,11 @@ pub(crate) fn process_dependent_file(
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use rstest::rstest;
+
     use super::*;
 
     fn build_error(factory: &NixRdpdrBackendFactory) -> NixRdpdrBackendFactoryError {
@@ -1646,17 +2194,34 @@ mod tests {
 
     /// Opens the shared directory, returning the status and file ID of the Device Create Response.
     fn open_share(backend: &mut NixRdpdrBackend) -> (NtStatus, u32) {
+        open_root(backend, 1)
+    }
+
+    /// Opens the root of `device_id`, returning the status and file ID of the Device Create Response.
+    fn open_root(backend: &mut NixRdpdrBackend, device_id: u32) -> (NtStatus, u32) {
+        open_path(backend, device_id, r"\")
+    }
+
+    /// Opens `path` through `device_id`, returning the status and file ID of the Device Create Response.
+    fn open_path(backend: &mut NixRdpdrBackend, device_id: u32, path: &str) -> (NtStatus, u32) {
         let request = DeviceCreateRequest {
-            device_io_request: header(0, MajorFunction::Create),
+            device_io_request: DeviceIoRequest {
+                device_id,
+                ..header(0, MajorFunction::Create)
+            },
             desired_access: DesiredAccess::empty(),
             allocation_size: 0,
             file_attributes: FileAttributes::empty(),
             shared_access: SharedAccess::empty(),
             create_disposition: CreateDisposition::FILE_OPEN,
             create_options: CreateOptions::empty(),
-            path: r"\".to_owned(),
+            path: path.to_owned(),
         };
-        let response = create_drive(backend, request).expect("complete create");
+        create_response(&create_drive(backend, request).expect("complete create"))
+    }
+
+    /// The status and file ID of a Device Create Response.
+    fn create_response(response: &[SvcMessage]) -> (NtStatus, u32) {
         let response = response[0].encode_unframed_pdu().expect("encode create response");
         // RDPDR_HEADER (4 bytes), DeviceId and CompletionId precede IoStatus, and FileId follows it
         // ([MS-RDPEFS] 2.2.1.5.1 Device Create Response (DR_CREATE_RSP)).
@@ -1664,6 +2229,67 @@ mod tests {
             NtStatus::from(u32::from_le_bytes(response[12..16].try_into().expect("status"))),
             u32::from_le_bytes(response[16..20].try_into().expect("file ID")),
         )
+    }
+
+    /// Sends a create of `path` through `device_id` as the channel does, with every access, returning the status and file ID of the Device Create Response.
+    fn create_through_the_channel(
+        backend: &mut NixRdpdrBackend,
+        device_id: u32,
+        path: &str,
+        create_disposition: CreateDisposition,
+        create_options: CreateOptions,
+    ) -> (NtStatus, u32) {
+        let request = DeviceCreateRequest {
+            device_io_request: DeviceIoRequest {
+                device_id,
+                ..header(0, MajorFunction::Create)
+            },
+            desired_access: DesiredAccess::GENERIC_ALL,
+            allocation_size: 0,
+            file_attributes: FileAttributes::empty(),
+            shared_access: SharedAccess::empty(),
+            create_disposition,
+            create_options,
+            path: path.to_owned(),
+        };
+        let response = backend
+            .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request))
+            .expect("complete create");
+        create_response(&response)
+    }
+
+    /// Renames `from` to `to` through `device_id` as the channel does, with a handle opened for the rename and closed after it.
+    fn rename_through_the_channel(backend: &mut NixRdpdrBackend, device_id: u32, from: &str, to: &str) {
+        let (opened, file_id) = create_through_the_channel(
+            backend,
+            device_id,
+            from,
+            CreateDisposition::FILE_OPEN,
+            CreateOptions::empty(),
+        );
+        assert_eq!(opened, NtStatus::SUCCESS, "open {from}");
+        let header = |major_function| DeviceIoRequest {
+            device_id,
+            ..header(file_id, major_function)
+        };
+        let renamed = backend
+            .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+                ServerDriveSetInformationRequest {
+                    device_io_request: header(MajorFunction::SetInformation),
+                    set_buffer: FileInformationClass::Rename(FileRenameInformation {
+                        replace_if_exists: Boolean::False,
+                        file_name: to.to_owned(),
+                    }),
+                },
+            ))
+            .expect("complete rename");
+        // IoStatus lies at the same offset in every Device I/O Response ([MS-RDPEFS] 2.2.1.5 Device I/O Response (DR_DEVICE_IOCOMPLETION)).
+        assert_eq!(create_response(&renamed).0, NtStatus::SUCCESS, "rename {from} to {to}");
+        backend
+            .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+                device_io_request: header(MajorFunction::Close),
+            }))
+            .expect("complete close");
     }
 
     #[test]
@@ -1685,6 +2311,480 @@ mod tests {
         )
         .expect("complete close");
         assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
+    }
+
+    /// The devices whose roots the tests of the cap open.
+    const FIRST: u32 = 1;
+    const SECOND: u32 = 2;
+
+    /// Two directories in one sandbox, each to be the root of a drive, removed when dropped.
+    struct TwoRoots {
+        sandbox: PathBuf,
+        first: PathBuf,
+        second: PathBuf,
+    }
+
+    impl TwoRoots {
+        fn new() -> Self {
+            static NEXT_SANDBOX: AtomicU32 = AtomicU32::new(0);
+            let unique = format!(
+                "rdpdr-native-nix-cap-{}-{}",
+                std::process::id(),
+                NEXT_SANDBOX.fetch_add(1, Ordering::Relaxed)
+            );
+            let sandbox = std::env::temp_dir().join(unique);
+            let _ = std::fs::remove_dir_all(&sandbox);
+            let (first, second) = (sandbox.join("first"), sandbox.join("second"));
+            std::fs::create_dir_all(&first).expect("create first root");
+            std::fs::create_dir_all(&second).expect("create second root");
+            Self { sandbox, first, second }
+        }
+
+        /// A backend without a shared directory, whose devices `FIRST` and `SECOND` serve the two roots.
+        fn backend(&self) -> NixRdpdrBackend {
+            NixRdpdrBackend::default()
+                .with_drive_root(FIRST, utf8(&self.first))
+                .with_drive_root(SECOND, utf8(&self.second))
+        }
+
+        /// A backend under a cap of eight open files, half of which are four roots, given a new directory of the sandbox as the root of each device from 1 to `root_count`.
+        ///
+        /// The cap is set before the roots are given, because it bounds them as they are resolved.
+        fn backend_with_roots(&self, root_count: u32) -> NixRdpdrBackend {
+            let mut backend = NixRdpdrBackend::default();
+            backend.max_open_files = 8;
+            (1..=root_count).fold(backend, |backend, device_id| {
+                let root = self.sandbox.join(format!("root-{device_id}"));
+                std::fs::create_dir(&root).expect("create root");
+                backend.with_drive_root(device_id, utf8(&root))
+            })
+        }
+    }
+
+    impl Drop for TwoRoots {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.sandbox);
+        }
+    }
+
+    fn utf8(path: &Path) -> String {
+        path.to_str().expect("UTF-8 temporary directory").to_owned()
+    }
+
+    /// Opens the root of each device in turn under a cap of eight open files, until a create fails.
+    /// Returns the number of files opened and the status of the failure.
+    fn opens_until_refused(mut backend: NixRdpdrBackend, devices: &[u32]) -> (usize, NtStatus) {
+        // A create refused at the cap and one that ran out of descriptors report the same status.
+        // Only a cap far below the descriptor limit tells them apart, and this private field is the only way to set one.
+        backend.max_open_files = 8;
+        for (opened, device_id) in devices.iter().cycle().enumerate() {
+            let (status, _) = open_root(&mut backend, *device_id);
+            if status != NtStatus::SUCCESS {
+                return (opened, status);
+            }
+        }
+        unreachable!("a cycle over the devices does not end")
+    }
+
+    /// The open files of every drive count against one limit, so more drives do not let the server hold more files open.
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file_table.rs
+    #[test]
+    fn drives_share_the_open_file_limit() {
+        let roots = TwoRoots::new();
+        let through_one_drive = opens_until_refused(roots.backend(), &[FIRST]);
+
+        let through_two_drives = opens_until_refused(roots.backend(), &[FIRST, SECOND]);
+
+        // oracle: mutant the status that refuses a create beyond the limit changed
+        assert_eq!(through_one_drive.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert!(0 < through_one_drive.0);
+        assert_eq!(through_two_drives, through_one_drive);
+    }
+
+    /// A root held open takes one place under the limit on open files, so the descriptors of the roots come out of the budget that limit protects.
+    // oracle: mutant held root descriptors left out of the open-file limit
+    #[test]
+    fn a_held_root_takes_the_place_of_one_open_file() {
+        let roots = TwoRoots::new();
+        let with_one_root = opens_until_refused(
+            NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.first)),
+            &[FIRST],
+        );
+
+        let with_two_roots = opens_until_refused(roots.backend(), &[FIRST]);
+
+        assert_eq!(with_one_root.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert_eq!(with_two_roots.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert!(0 < with_two_roots.0);
+        assert_eq!(with_two_roots.0 + 1, with_one_root.0);
+    }
+
+    /// A root refused because its path followed a link in another root keeps the directory it named open.
+    /// It therefore takes a place under the limit on open files, although nothing is served from it.
+    // oracle: mutant a root refused for a link left out of the places the roots take under the open-file limit
+    #[test]
+    fn a_root_refused_for_a_link_takes_the_place_of_one_open_file() {
+        let roots = TwoRoots::new();
+        let link = roots.first.join("link");
+        std::os::unix::fs::symlink(&roots.second, &link).expect("link directory");
+        let mut backend = NixRdpdrBackend::default()
+            .with_drive_root(FIRST, utf8(&roots.first))
+            .with_drive_root(SECOND, utf8(&link));
+        let through_the_refused_root = open_root(&mut backend, SECOND).0;
+
+        let opened = opens_until_refused(backend, &[FIRST]);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_refused_root, NtStatus::UNSUCCESSFUL);
+        // The eight places under the cap, less one for each of the two roots.
+        assert_eq!(opened, (6, NtStatus::INSUFFICIENT_RESOURCES));
+    }
+
+    /// A root that was replaced is no longer held open, so it takes no place under the limit on open files.
+    // oracle: mutant the directory of a replaced root kept open
+    #[test]
+    fn a_replaced_root_is_no_longer_held_open() {
+        let roots = TwoRoots::new();
+        let with_one_root = opens_until_refused(
+            NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.second)),
+            &[FIRST],
+        );
+
+        let with_a_replaced_root = opens_until_refused(
+            NixRdpdrBackend::default()
+                .with_drive_root(FIRST, utf8(&roots.first))
+                .with_drive_root(FIRST, utf8(&roots.second)),
+            &[FIRST],
+        );
+
+        assert!(0 < with_one_root.0);
+        assert_eq!(with_a_replaced_root, with_one_root);
+    }
+
+    /// Each root takes its own place under the limit on open files, also when another root names the same directory.
+    /// Which descriptor the requests of a drive use is not checked here.
+    // oracle: mutant roots that name one directory took one place between them under the open-file limit
+    #[test]
+    fn drives_of_the_same_directory_each_hold_it_open() {
+        let roots = TwoRoots::new();
+        let alias = roots.sandbox.join("alias");
+        std::os::unix::fs::symlink(&roots.first, &alias).expect("link directory");
+        let one_drive = || NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.first));
+        let with_one_drive = opens_until_refused(one_drive(), &[FIRST]);
+
+        let with_two_drives = opens_until_refused(one_drive().with_drive_root(SECOND, utf8(&alias)), &[FIRST]);
+
+        assert_eq!(with_one_drive.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert_eq!(with_two_drives.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert!(0 < with_two_drives.0);
+        assert_eq!(with_two_drives.0 + 1, with_one_drive.0);
+    }
+
+    /// The roots held open take at most half the places under the limit on open files.
+    /// A root given beyond that is served nothing, and the roots given before it are served.
+    // oracle: mutant roots held open without a bound, or with a bound off by one
+    #[test]
+    fn a_root_beyond_half_the_open_file_limit_is_served_nothing() {
+        let roots = TwoRoots::new();
+        let mut backend = roots.backend_with_roots(5);
+
+        let beyond = open_root(&mut backend, 5).0;
+        let within = [1, 2, 3, 4].map(|device_id| open_root(&mut backend, device_id).0);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(beyond, NtStatus::UNSUCCESSFUL);
+        assert_eq!(within, [NtStatus::SUCCESS; 4]);
+    }
+
+    /// A root beyond the bound is still resolved, so a root whose path follows a link below its directory is refused, although that directory is not held open.
+    /// Which root lies beyond the bound can change between backends built from one configuration: here the first root names no directory until a server creates it, and then takes the place the enclosing root had.
+    /// The server also renames a link to a directory outside every root into the path of the inner root, and a create through the inner drive must not land there.
+    // oracle: mutant the directory of a root beyond the bound left out of those a followed link is checked against
+    #[test]
+    fn a_root_reached_through_a_link_below_a_root_beyond_the_bound_is_served_nothing() {
+        // The devices given the root that is missing at first, the inner root and the enclosing root.
+        let (missing, inner, enclosing) = (1, 4, 5);
+        let roots = TwoRoots::new();
+        let (outer, outside) = (roots.sandbox.join("outer"), roots.sandbox.join("outside"));
+        for directory in [&outer.join("a").join("b"), &outer.join("d"), &outside] {
+            std::fs::create_dir_all(directory).expect("create directory");
+        }
+        std::os::unix::fs::symlink(&outside, outer.join("d").join("b")).expect("link directory");
+        // Four roots are held open under a cap of eight open files, so the last of five that name a directory lies beyond the bound.
+        let backend = || {
+            let mut backend = NixRdpdrBackend::default();
+            backend.max_open_files = 8;
+            [
+                outer.join("new"),
+                roots.first.clone(),
+                roots.second.clone(),
+                outer.join("a").join("b"),
+                outer.clone(),
+            ]
+            .iter()
+            .zip(missing..=enclosing)
+            .fold(backend, |backend, (root, device_id)| {
+                backend.with_drive_root(device_id, utf8(root))
+            })
+        };
+        let mut earlier = backend();
+        let created = create_through_the_channel(
+            &mut earlier,
+            enclosing,
+            r"\new",
+            CreateDisposition::FILE_CREATE,
+            CreateOptions::FILE_DIRECTORY_FILE,
+        );
+        assert_eq!(created.0, NtStatus::SUCCESS);
+        rename_through_the_channel(&mut earlier, enclosing, r"\a", r"\a_old");
+        rename_through_the_channel(&mut earlier, enclosing, r"\d", r"\a");
+        drop(earlier);
+
+        let mut later = backend();
+        let create_file = |backend: &mut NixRdpdrBackend, device_id| {
+            create_through_the_channel(
+                backend,
+                device_id,
+                r"\new.txt",
+                CreateDisposition::FILE_CREATE,
+                CreateOptions::empty(),
+            )
+            .0
+        };
+        let through_the_inner_drive = create_file(&mut later, inner);
+        let through_the_enclosing_drive = create_file(&mut later, enclosing);
+        let through_the_drive_missing_at_first = create_file(&mut later, missing);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_inner_drive, NtStatus::UNSUCCESSFUL);
+        assert_eq!(std::fs::read_dir(&outside).expect("list directory").count(), 0);
+        assert_eq!(through_the_enclosing_drive, NtStatus::UNSUCCESSFUL);
+        // The root that took the place of the enclosing one is served.
+        assert_eq!(through_the_drive_missing_at_first, NtStatus::SUCCESS);
+    }
+
+    /// The devices given a root whose walk failed, a root reached through a link, and a root whose path only descends.
+    const FAILED: u32 = 1;
+    const LINKED: u32 = 2;
+    const DESCENDING: u32 = 3;
+
+    /// A directory, a link to another directory that lies outside both, and a path for a root whose walk is given a failure.
+    struct RootsBesideAFailedWalk {
+        /// Removes the sandbox when dropped.
+        _roots: TwoRoots,
+        /// A path without a symbolic link, which names the first directory.
+        descending: String,
+        /// A path that names the second directory through a link in the sandbox.
+        linked: String,
+        /// The second directory, which `linked` names.
+        target: PathBuf,
+        /// A path below the sandbox, which the tests never resolve.
+        failed: String,
+    }
+
+    impl RootsBesideAFailedWalk {
+        fn new() -> Self {
+            let roots = TwoRoots::new();
+            // The temporary directory can lie behind a symbolic link, as `/var` is on macOS.
+            // A root given through it would itself be reached through a link, so every path here starts from the canonical one.
+            let sandbox = std::fs::canonicalize(&roots.sandbox).expect("canonical sandbox");
+            let (alias, target) = (sandbox.join("alias"), sandbox.join("second"));
+            std::os::unix::fs::symlink(&target, &alias).expect("link directory");
+            Self {
+                descending: utf8(&sandbox.join("first")),
+                linked: utf8(&alias),
+                target,
+                failed: utf8(&sandbox.join("failed")),
+                _roots: roots,
+            }
+        }
+
+        /// A backend without a shared directory, given the roots of `order` one after the other, the walk of `FAILED` having failed with `error`.
+        fn backend(&self, order: [u32; 3], error: Errno) -> NixRdpdrBackend {
+            order
+                .into_iter()
+                .fold(NixRdpdrBackend::default(), |mut backend, device_id| match device_id {
+                    FAILED => {
+                        backend
+                            .roots
+                            .record_root(backend.max_open_files, Some(FAILED), &self.failed, Err(error));
+                        backend
+                    }
+                    LINKED => backend.with_drive_root(LINKED, self.linked.clone()),
+                    _ => backend.with_drive_root(DESCENDING, self.descending.clone()),
+                })
+        }
+    }
+
+    /// Creates a file in the root of `device_id` as the channel does, returning the status of the Device Create Response.
+    fn create_file_in_the_root(backend: &mut NixRdpdrBackend, device_id: u32) -> NtStatus {
+        create_through_the_channel(
+            backend,
+            device_id,
+            r"\new.txt",
+            CreateDisposition::FILE_CREATE,
+            CreateOptions::empty(),
+        )
+        .0
+    }
+
+    /// A walk that fails for want of a descriptor, or of permission to search a directory, leaves the directory of its root undetermined, and that directory may hold the link another root was reached through.
+    /// That root is therefore served nothing, wherever its link lies and in whichever order the roots are given.
+    // oracle: mutant a root reached through a link served while the directory of another root could not be determined
+    #[rstest]
+    #[case::the_failed_walk_first([FAILED, LINKED, DESCENDING])]
+    #[case::the_failed_walk_last([LINKED, DESCENDING, FAILED])]
+    fn a_root_reached_through_a_link_is_served_nothing_while_the_directory_of_another_root_is_undetermined(
+        #[case] order: [u32; 3],
+        #[values(Errno::EMFILE, Errno::EACCES)] error: Errno,
+    ) {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = fixture.backend(order, error);
+
+        let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_linked_root, NtStatus::UNSUCCESSFUL);
+        assert_eq!(std::fs::read_dir(&fixture.target).expect("list directory").count(), 0);
+    }
+
+    /// A path that only descends ends in or below every directory it passes through, an undetermined one included, so its root is served.
+    // oracle: mutant every root refused while the directory of another root could not be determined
+    #[rstest]
+    #[case::the_failed_walk_first([FAILED, LINKED, DESCENDING])]
+    #[case::the_failed_walk_last([LINKED, DESCENDING, FAILED])]
+    fn a_root_whose_path_only_descends_is_served_while_the_directory_of_another_root_is_undetermined(
+        #[case] order: [u32; 3],
+    ) {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = fixture.backend(order, Errno::EMFILE);
+
+        let through_the_descending_root = create_file_in_the_root(&mut backend, DESCENDING);
+
+        assert_eq!(through_the_descending_root, NtStatus::SUCCESS);
+    }
+
+    /// The shared directory is a root like any other once a drive has a root of its own, so a failed walk of it leaves its directory undetermined too.
+    // oracle: mutant the shared directory left out of the roots whose directory has to be known
+    #[test]
+    fn a_root_reached_through_a_link_is_served_nothing_while_the_shared_directory_is_undetermined() {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = NixRdpdrBackend::new(fixture.failed.clone());
+        backend
+            .roots
+            .record_root(backend.max_open_files, None, &fixture.failed, Err(Errno::EMFILE));
+        let mut backend = backend.with_drive_root(LINKED, fixture.linked.clone());
+
+        let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_linked_root, NtStatus::UNSUCCESSFUL);
+        assert_eq!(std::fs::read_dir(&fixture.target).expect("list directory").count(), 0);
+    }
+
+    /// A root given again replaces the one whose walk failed, so the directory of every root is known and the root reached through a link is served again.
+    // oracle: mutant a root reached through a link kept unusable after the root whose directory was undetermined is replaced
+    #[test]
+    fn a_root_reached_through_a_link_is_served_once_the_root_with_an_undetermined_directory_is_replaced() {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = fixture
+            .backend([FAILED, LINKED, DESCENDING], Errno::EMFILE)
+            .with_drive_root(FAILED, fixture.descending.clone());
+
+        let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
+
+        assert_eq!(through_the_linked_root, NtStatus::SUCCESS);
+    }
+
+    /// A walk that shows its path names no directory leaves no directory undetermined, so a root reached through a link outside every root is served beside it.
+    // oracle: mutant a path that names no directory counted as a directory that could not be determined
+    #[rstest]
+    #[case::missing(Errno::ENOENT)]
+    #[case::not_a_directory(Errno::ENOTDIR)]
+    #[case::too_many_links(Errno::ELOOP)]
+    #[case::malformed(Errno::EINVAL)]
+    #[case::too_many_components(Errno::ENAMETOOLONG)]
+    fn a_root_reached_through_a_link_is_served_beside_a_root_whose_path_names_no_directory(#[case] error: Errno) {
+        let fixture = RootsBesideAFailedWalk::new();
+        let mut backend = fixture.backend([FAILED, LINKED, DESCENDING], error);
+
+        let through_the_linked_root = create_file_in_the_root(&mut backend, LINKED);
+
+        assert_eq!(through_the_linked_root, NtStatus::SUCCESS);
+    }
+
+    /// A walk that reached its directory but could not open it to be read leaves the root unusable and its directory known.
+    /// A root reached through a link below that directory is therefore refused, and one reached through a link outside every root is served, in whichever order the roots are given.
+    // oracle: mutant the directory of a root that could not be opened to be read forgotten, or counted as undetermined
+    #[rstest]
+    #[case::the_unreadable_root_first([1, 2, 3])]
+    #[case::the_unreadable_root_last([2, 3, 1])]
+    fn a_root_reached_through_a_link_is_checked_against_the_directory_of_a_root_that_cannot_be_read(
+        #[case] order: [u32; 3],
+    ) {
+        // The devices given the root that cannot be read, a root reached through a link below it, and one reached through a link beside it.
+        let (unreadable, below, beside) = (1, 2, 3);
+        let roots = TwoRoots::new();
+        let (outside, other) = (&roots.second, roots.sandbox.join("other"));
+        std::fs::create_dir(&other).expect("create directory");
+        std::os::unix::fs::symlink(outside, roots.first.join("link")).expect("link directory");
+        std::os::unix::fs::symlink(&other, roots.sandbox.join("alias")).expect("link directory");
+        let mut backend = NixRdpdrBackend::default();
+        for device_id in order {
+            backend = if device_id == unreadable {
+                let path = utf8(&roots.first);
+                let walk = Root::resolve(&path).expect("resolve root");
+                let walk = ResolvedRoot {
+                    root: Err(Errno::EACCES),
+                    ..walk
+                };
+                backend
+                    .roots
+                    .record_root(backend.max_open_files, Some(unreadable), &path, Ok(walk));
+                backend
+            } else if device_id == below {
+                backend.with_drive_root(below, utf8(&roots.first.join("link")))
+            } else {
+                backend.with_drive_root(beside, utf8(&roots.sandbox.join("alias")))
+            };
+        }
+
+        let through_the_unreadable_root = create_file_in_the_root(&mut backend, unreadable);
+        let through_the_root_below = create_file_in_the_root(&mut backend, below);
+        let through_the_root_beside = create_file_in_the_root(&mut backend, beside);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_unreadable_root, NtStatus::UNSUCCESSFUL);
+        assert_eq!(through_the_root_below, NtStatus::UNSUCCESSFUL);
+        assert_eq!(std::fs::read_dir(outside).expect("list directory").count(), 0);
+        assert_eq!(through_the_root_beside, NtStatus::SUCCESS);
+    }
+
+    /// However many roots are given, they leave half the places under the limit to open files.
+    /// A root beyond the bound is therefore not held open, which would take a place.
+    // oracle: mutant roots took the places the limit leaves to open files, or a root beyond the bound was kept open
+    #[rstest]
+    #[case::one_root_more_than_the_bound(5)]
+    #[case::more_roots_than_the_limit(12)]
+    fn roots_leave_half_the_open_file_limit_to_open_files(#[case] root_count: u32) {
+        let roots = TwoRoots::new();
+        let backend = roots.backend_with_roots(root_count);
+
+        let opened = opens_until_refused(backend, &[1]);
+
+        assert_eq!(opened, (4, NtStatus::INSUFFICIENT_RESOURCES));
+    }
+
+    /// A root given again takes the place of the root it replaces, so it is served although the roots already hold half the places under the limit.
+    // oracle: mutant the root being replaced counted against the bound on the root that replaces it
+    #[test]
+    fn a_root_takes_the_place_of_the_root_it_replaces() {
+        let roots = TwoRoots::new();
+        std::fs::write(roots.second.join("only-in-second.txt"), b"second").expect("write file");
+
+        let mut backend = roots.backend_with_roots(4).with_drive_root(1, utf8(&roots.second));
+
+        assert_eq!(open_path(&mut backend, 1, r"\only-in-second.txt").0, NtStatus::SUCCESS);
     }
 
     // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file_table.rs
