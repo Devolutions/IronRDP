@@ -78,6 +78,9 @@ internal partial struct ConfigBuilder
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_set_direct_dvc", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void SetDirectDvc(ConfigBuilder* handle, DirectDvcConfig* directDvc);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_add_redirected_drive", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVoidIronRdpError AddRedirectedDrive(ConfigBuilder* handle, DiplomatSliceU8 displayName, DiplomatSliceU8 rootPath, [MarshalAs(UnmanagedType.U1)] bool readOnly);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_build", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultConfigIronRdpError Build(ConfigBuilder* handle);
 

@@ -57,13 +57,55 @@ Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from 
 `Unavailable` means the channel was not requested.
 `ActiveStage.DisplayControlCapabilities` exposes the server's monitor count and area limits once `Ready`.
 
+## Windows drive redirection
+
+Select one or more directories on the `ConfigBuilder` before building the configuration.
+Each selected directory is announced as a remote drive during RDPDR channel initialization.
+Set `readOnly` to reject remote writes to that drive.
+Drive selection changes require a new connector and connection.
+Replace the example paths and credentials with values for your session.
+The connector advertises a silent RDPSND channel for RDPDR compatibility; it does not play audio.
+By default, the compatibility channel does not request audio redirection.
+Attach native audio separately if playback is needed.
+
+```csharp
+var builder = ConfigBuilder.New();
+builder.WithUsernameAndPassword("user", "password");
+builder.SetDesktopSize(1080, 1920);
+builder.ClientName = "IronRdp";
+builder.ClientDir = @"C:\";
+builder.PerformanceFlags = PerformanceFlags.NewDefault();
+builder.AddRedirectedDrive("Projects", @"C:\Users\me\Projects", readOnly: true);
+builder.AddRedirectedDrive("Data", @"D:\Data", readOnly: false);
+var config = builder.Build();
+var connector = ClientConnector.New(config, "127.0.0.1:3389");
+```
+
+The root must be an absolute, normalized drive-letter path.
+Relative, parent-directory, UNC, device and verbatim paths are rejected.
+Drive names must be distinct after device-name sanitization and Unicode uppercase conversion.
+The path syntax is checked when adding the drive.
+The directory must exist and be accessible when the server requests file I/O; it is not opened during configuration.
+Remote opens do not follow reparse points, so a root reached through a junction, symbolic link or mount point fails at that time; select the resolved directory instead.
+Drive redirection is supported only on Windows; other platforms return an error.
+
+Call `ActiveStage.PollRdpdrDeferred()` on a short timer, such as every 50 ms, even while the server sends no frames.
+Directory notifications and waiting file locks can complete asynchronously, and `Process` drains completions only after incoming frames.
+Serialize polling and `Process` with their transport writes, and write all returned response frames in order before the next operation.
+Dispose each output iterator, output and response frame after use.
+
+Call `ClientConnector.WithStaticChannelRdpdr(computerName, smartCardDeviceId)` to add smartcard redirection.
+That call keeps the drives selected in the configuration.
+Drive IDs start at one, so choose a smartcard device ID that does not match a selected drive.
+Native audio playback can be attached before or after RDPDR without dropping its drive or smartcard configuration.
+
 ## Native audio
 
 Attach native playback and, optionally, microphone capture before starting the connector.
 Create a new `NativeAudio` for each connection.
 Native playback joins RDPDR without redirected devices if it is absent, because Windows servers require the channel to start playback.
 An existing RDPDR configuration is preserved.
-An existing RDPSND channel prevents native playback from being attached.
+An existing RDPSND channel prevents native playback from being attached, except for the silent channel installed for RDPDR compatibility.
 
 ```csharp
 using var audio = NativeAudio.New(

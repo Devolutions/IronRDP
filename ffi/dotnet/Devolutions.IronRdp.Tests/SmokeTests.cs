@@ -27,6 +27,179 @@ internal static class SmokeTests
 
     internal static IEnumerable<(string Name, System.Action Run)> Cases()
     {
+        if (OperatingSystem.IsWindows())
+        {
+            // oracle: mutant discard all drives configured before connector creation
+            yield return ("Windows config with redirected drives advertises rdpdr and rdpsnd", () =>
+            {
+                var builder = TlsConfigBuilder();
+                AddWindowsDrives(builder);
+                var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+
+                AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+            });
+
+            // oracle: mutant accept an invalid root or name
+            const string invalidRoot = "redirected drive root must be an absolute path on a logical volume";
+            foreach (var (caseName, displayName, root, message) in new[]
+            {
+                ("relative root", "Invalid", @"relative\folder", invalidRoot),
+                ("parent root", "Invalid", @"C:\folder\..\other", invalidRoot),
+                ("UNC root", "Invalid", @"\\server\share", invalidRoot),
+                ("device root", "Invalid", @"\\.\C:\folder", invalidRoot),
+                ("verbatim root", "Invalid", @"\\?\C:\folder", invalidRoot),
+                ("embedded NUL root", "Invalid", "C:\\folder\0bad", invalidRoot),
+                ("empty name", "", WindowsDriveRoot(), "redirected drive display name must not be empty"),
+                ("embedded NUL name", "bad\0name", WindowsDriveRoot(), "redirected drive display name must not contain NUL"),
+            })
+            {
+                yield return ($"Windows drive config rejects {caseName} without changing the builder", () =>
+                {
+                    var builder = TlsConfigBuilder();
+                    ThrowsWithMessage<IronRdpException>(() => builder.AddRedirectedDrive(displayName, root, false), message);
+                    AddWindowsDrives(builder);
+                    var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+                    connector.WithStaticChannelRdpdr("smoke-tests", 3);
+                    AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+                });
+            }
+
+            // oracle: mutant reuse a redirected drive ID for the smartcard device
+            yield return ("Windows smartcard ID collision leaves the connector usable", () =>
+            {
+                var builder = TlsConfigBuilder();
+                AddWindowsDrives(builder);
+                var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+
+                ThrowsWithMessage<IronRdpException>(
+                    () => connector.WithStaticChannelRdpdr("smoke-tests", 1),
+                    "smartcard device ID conflicts with a redirected drive");
+                ThrowsWithMessage<IronRdpException>(
+                    () => connector.WithStaticChannelRdpdr("smoke-tests", 2),
+                    "smartcard device ID conflicts with a redirected drive");
+                connector.WithStaticChannelRdpdr("smoke-tests", 0);
+                AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+            });
+
+            // oracle: mutant remove RDPDR after native playback when drives are configured
+            yield return ("Windows drives and smartcard precede native playback", () =>
+            {
+                var builder = TlsConfigBuilder();
+                AddWindowsDrives(builder);
+                var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+                using var audio = NativeAudio.New(true, true, "", "", 0);
+                connector.WithStaticChannelRdpdr("smoke-tests", 0);
+                connector.WithNativeAudio(audio);
+                Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+                Throws<IronRdpException>(() => connector.WithStaticChannelRdpdr("smoke-tests", 0));
+                AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+            });
+
+            // oracle: mutant remove RDPDR after smartcard attachment when drives are configured
+            yield return ("Windows native playback precedes smartcard with drives", () =>
+            {
+                var builder = TlsConfigBuilder();
+                AddWindowsDrives(builder);
+                var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
+                using var audio = NativeAudio.New(true, true, "", "", 0);
+                connector.WithNativeAudio(audio);
+                connector.WithStaticChannelRdpdr("smoke-tests", 0);
+                Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+                Throws<IronRdpException>(() => connector.WithStaticChannelRdpdr("smoke-tests", 0));
+                AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+            });
+        }
+        else
+        {
+            // oracle: mutant allow redirected drives on unsupported platforms
+            yield return ("drive redirection rejects unsupported platforms", () =>
+            {
+                var builder = ConfigBuilder.New();
+                var error = Throws<IronRdpException>(() => builder.AddRedirectedDrive("Shared", @"C:\shared", true));
+                True(error.Message.Contains("drive redirection is supported only on Windows"), $"error message: {error.Message}");
+            });
+        }
+
+        // oracle: spec MS-RDPEFS §Appendix_A_1
+        yield return ("smartcard RDPDR advertises RDPSND without native playback", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+        });
+
+        // oracle: mutant remove RDPDR compatibility when native playback is attached
+        yield return ("native playback can replace the RDPDR silent channel", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(true, true, "", "", 0);
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            connector.WithNativeAudio(audio);
+            Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+            Throws<IronRdpException>(() => connector.WithStaticChannelRdpdr("smoke-tests", 0));
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+        });
+
+        // oracle: mutant remove DRDYNVC when attaching smartcard RDPDR
+        yield return ("smartcard RDPDR preserves existing native playback", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(true, true, "", "", 0);
+            connector.WithNativeAudio(audio);
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+        });
+
+        // oracle: mutant remove RDPDR when capture-only audio is attached
+        yield return ("capture-only audio preserves the RDPDR silent channel", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(false, true, "", "", 0);
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            connector.WithNativeAudio(audio);
+            connector.WithStaticChannelRdpSnd();
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
+        });
+
+        // oracle: mutant remove RDPDR after rejecting native audio
+        yield return ("rejected native playback leaves RDPDR and RDPSND usable", () =>
+        {
+            var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(true, false, "", "", 0);
+            first.WithNativeAudio(audio);
+            second.WithStaticChannelRdpdr("smoke-tests", 0);
+            Throws<IronRdpException>(() => second.WithNativeAudio(audio));
+            using var replacement = NativeAudio.New(true, false, "", "", 0);
+            second.WithNativeAudio(replacement);
+            Throws<IronRdpException>(() => second.WithStaticChannelRdpSnd());
+            AssertConnectorChannels(second, "rdpdr", "rdpsnd", "drdynvc");
+        });
+
+        // oracle: mutant replace explicit static playback while attaching RDPDR
+        yield return ("smartcard RDPDR preserves explicit static playback", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var audio = NativeAudio.New(true, false, "", "", 0);
+            connector.WithStaticChannelRdpSnd();
+            connector.WithStaticChannelRdpdr("smoke-tests", 0);
+            Throws<IronRdpException>(() => connector.WithNativeAudio(audio));
+            AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
+        });
+
+        // oracle: mutant alter connector state after rejecting a late channel attachment
+        yield return ("static playback cannot be attached after connecting starts", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            using var buf = WriteBuf.New();
+            connector.StepNoInput(buf);
+            Throws<IronRdpException>(() => connector.WithStaticChannelRdpSnd());
+            buf.Clear();
+            connector.Step(TpktX224ConfirmSelectingTls, buf);
+            True(connector.ShouldPerformSecurityUpgrade(), "connector continues after rejection");
+        });
+
         // oracle: ffi/INTENT.md "Copying into caller buffers" (bytes past the image)
         yield return ("decoded image exposes its size and zeroed data", () =>
         {
@@ -868,6 +1041,8 @@ internal static class SmokeTests
             first.WithNativeAudio(audio);
             Throws<IronRdpException>(() => second.WithNativeAudio(audio));
             Throws<IronRdpException>(() => first.WithStaticChannelRdpSnd());
+            // oracle: mutant attach native playback without RDPDR
+            AssertConnectorChannels(first, "rdpdr", "rdpsnd", "drdynvc");
         });
 
         // oracle: mutant silently replace an already attached static playback channel
@@ -1785,7 +1960,39 @@ internal static class SmokeTests
         }
     }
 
-    private static Config TlsConfig(DirectDvcConfig? directDvc = null)
+    private static string WindowsDriveRoot() => Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+
+    private static void AddWindowsDrives(ConfigBuilder builder)
+    {
+        var root = WindowsDriveRoot();
+        var parent = Directory.GetParent(root)!.FullName;
+        builder.AddRedirectedDrive("ReadOnly", root, true);
+        builder.AddRedirectedDrive("Writable", parent, false);
+    }
+
+    private static void AssertConnectorChannels(ClientConnector connector, params string[] channels)
+    {
+        using var buf = WriteBuf.New();
+        connector.StepNoInput(buf);
+        buf.Clear();
+        connector.Step(TpktX224ConfirmSelectingTls, buf);
+        True(connector.ShouldPerformSecurityUpgrade(), "TLS upgrade is next");
+        connector.MarkSecurityUpgradeAsDone();
+        buf.Clear();
+        connector.StepNoInput(buf);
+        using var filled = buf.Filled;
+        var request = new byte[(int)filled.Size];
+        filled.Fill(request);
+        foreach (var channel in channels)
+        {
+            var name = System.Text.Encoding.ASCII.GetBytes(channel + "\0");
+            int first = request.AsSpan().IndexOf(name);
+            True(first >= 0, $"{channel} is advertised");
+            Equal(first, request.AsSpan().LastIndexOf(name), $"{channel} is advertised once");
+        }
+    }
+
+    private static ConfigBuilder TlsConfigBuilder()
     {
         var builder = ConfigBuilder.New();
         builder.WithUsernameAndPassword("user", "password");
@@ -1795,6 +2002,12 @@ internal static class SmokeTests
         builder.EnableTls = true;
         builder.EnableCredssp = false;
         builder.PerformanceFlags = PerformanceFlags.NewDefault();
+        return builder;
+    }
+
+    private static Config TlsConfig(DirectDvcConfig? directDvc = null)
+    {
+        var builder = TlsConfigBuilder();
         if (directDvc is not null)
         {
             builder.DirectDvc = directDvc;

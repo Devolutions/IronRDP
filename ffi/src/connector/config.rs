@@ -2,6 +2,38 @@ use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 
 use self::ffi::PerformanceFlagsType;
 
+#[cfg_attr(
+    not(windows),
+    expect(dead_code, reason = "redirected-drive settings are consumed only by Windows builds")
+)]
+#[derive(Clone)]
+pub(crate) struct RedirectedDriveConfig {
+    pub(crate) device_id: u32,
+    pub(crate) display_name: String,
+    pub(crate) root_path: String,
+    pub(crate) read_only: bool,
+}
+
+#[cfg(any(windows, test))]
+/// Returns the drive name as announced in DeviceData, without a trailing colon and uppercased, for duplicate detection.
+///
+/// The uppercase fold and the dropped trailing colon are a deliberately conservative client-side policy:
+/// Windows resolves `\\tsclient\<name>` case-insensitively,
+/// [MS-RDPEFS] 2.2.1.3, "Device Announce Header (DEVICE_ANNOUNCE)", allows a colon only at the end of a device name
+/// without saying whether the server keeps it,
+/// and both can only reject more names, never accept a colliding one.
+///
+/// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
+fn drive_wire_name(name: &str) -> String {
+    // The device ID is only used to retrieve the single entry in this temporary collection.
+    let mut devices = ironrdp::rdpdr::pdu::efs::Devices::new();
+    devices.add_drive(0, name.to_owned());
+    let data = devices.device(0).expect("the drive was just added").device_data();
+    let data = data.strip_suffix(&[0]).unwrap_or(data);
+    let data = data.strip_suffix(b":").unwrap_or(data);
+    String::from_utf8_lossy(data).to_uppercase()
+}
+
 /// The bitmap settings used when the caller sets none, matching the native client.
 ///
 /// Without a codec on offer, the server falls back to sending the screen as nearly raw bitmaps,
@@ -48,9 +80,10 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct Config {
-        pub connector: ironrdp::connector::Config,
-        pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
-        pub direct_dvc: Option<DirectDvcConfig>,
+        pub(crate) connector: ironrdp::connector::Config,
+        pub(crate) dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
+        pub(crate) direct_dvc: Option<DirectDvcConfig>,
+        pub(crate) redirected_drives: Vec<super::RedirectedDriveConfig>,
     }
 
     impl Config {
@@ -69,6 +102,10 @@ pub mod ffi {
         }
     }
 
+    #[expect(
+        clippy::partial_pub_fields,
+        reason = "Diplomat exposes this opaque builder through methods only"
+    )]
     #[derive(Default)]
     #[diplomat::opaque_mut]
     pub struct ConfigBuilder {
@@ -96,6 +133,10 @@ pub mod ffi {
         pub timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>,
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
         pub direct_dvc: Option<DirectDvcConfig>,
+        redirected_drives: Vec<super::RedirectedDriveConfig>,
+        /// Sanitized names of `redirected_drives`, kept so each addition checks for collisions without re-deriving them.
+        #[cfg(windows)]
+        redirected_drive_wire_names: Vec<String>,
     }
 
     /// Where the server plays audio (the `audiomode` `.rdp` setting).
@@ -254,6 +295,56 @@ pub mod ffi {
             self.direct_dvc = Some(direct_dvc.clone());
         }
 
+        /// Selects a Windows directory to redirect as a remote drive.
+        ///
+        /// The root must be an absolute, normalized drive-letter path.
+        /// Drive IDs are assigned in selection order, starting at one.
+        /// Read-only drives reject remote writes.
+        /// This setting applies to every connector built from this configuration and requires reconnecting to change.
+        /// Drive redirection is unsupported on non-Windows platforms.
+        /// RDPDR announces redirected devices with [MS-RDPEFS] 2.2.3.1, "Client Device List Announce".
+        ///
+        /// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d8b2bc1c-0207-4c15-abe3-62eaa2afcaf1
+        pub fn add_redirected_drive(
+            &mut self,
+            display_name: &str,
+            root_path: &str,
+            read_only: bool,
+        ) -> Result<(), Box<IronRdpError>> {
+            #[cfg(windows)]
+            {
+                let wire_name = super::drive_wire_name(display_name);
+                if self.redirected_drive_wire_names.contains(&wire_name) {
+                    return Err("redirected drive name is already in use".into());
+                }
+                let device_id =
+                    u32::try_from(self.redirected_drives.len() + 1).map_err(|_| "too many redirected drives")?;
+                ironrdp_rdpdr_native::RedirectedDrive::new(
+                    device_id,
+                    display_name.to_owned(),
+                    std::path::PathBuf::from(root_path),
+                    read_only,
+                )
+                .map_err(|error| {
+                    crate::error::GenericError(anyhow::Error::new(error).context("invalid redirected drive"))
+                })?;
+                self.redirected_drives.push(super::RedirectedDriveConfig {
+                    device_id,
+                    display_name: display_name.to_owned(),
+                    root_path: root_path.to_owned(),
+                    read_only,
+                });
+                self.redirected_drive_wire_names.push(wire_name);
+                Ok(())
+            }
+
+            #[cfg(not(windows))]
+            {
+                let _ = (display_name, root_path, read_only);
+                Err("drive redirection is supported only on Windows".into())
+            }
+        }
+
         #[expect(
             deprecated,
             reason = "a `Config` literal must name every field, including the deprecated one"
@@ -338,6 +429,7 @@ pub mod ffi {
                 connector,
                 dvc_pipe_proxy,
                 direct_dvc,
+                redirected_drives: self.redirected_drives.clone(),
             }))
         }
     }
@@ -400,14 +492,89 @@ impl From<PerformanceFlagsType> for PerformanceFlags {
 mod tests {
     use ironrdp::pdu::rdp::capability_sets::CodecProperty;
 
-    #[test]
-    fn build_offers_remotefx_when_no_bitmap_config_is_set() {
+    fn buildable_builder() -> Box<super::ffi::ConfigBuilder> {
         let mut builder = super::ffi::ConfigBuilder::new();
         builder.with_username_and_password("user", "password");
         builder.set_desktop_size(768, 1024);
         builder.set_client_name("client");
         builder.set_client_dir("C:\\");
         builder.set_performance_flags(&super::ffi::PerformanceFlags::new_default());
+        builder
+    }
+
+    #[cfg(windows)]
+    // oracle: mutant reuse one read-only setting for every configured drive
+    #[test]
+    fn redirected_drives_keep_independent_read_only_settings() {
+        let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        let mut builder = buildable_builder();
+        assert!(builder.add_redirected_drive("ReadOnly", &root_path, true).is_ok());
+        assert!(builder.add_redirected_drive("Writable", &root_path, false).is_ok());
+
+        let Ok(config) = builder.build() else {
+            panic!("valid configuration");
+        };
+
+        assert_eq!(config.redirected_drives.len(), 2);
+        assert!(config.redirected_drives[0].read_only);
+        assert!(!config.redirected_drives[1].read_only);
+    }
+
+    // oracle: mutant sanitize two distinct names to different wire names
+    // The colliding pairs follow the drive DeviceData encoding in ironrdp-rdpdr (`DeviceAnnounceHeader::new_drive`)
+    // followed by Unicode uppercase conversion; no specification defines this mapping.
+    #[test]
+    fn drive_names_collide_after_wire_sanitization_and_case_folding() {
+        assert_eq!(
+            super::drive_wire_name("Projects/Docs"),
+            super::drive_wire_name("projects_docs")
+        );
+        assert_eq!(super::drive_wire_name("\u{c4}"), super::drive_wire_name("\u{e4}"));
+        assert_eq!(super::drive_wire_name("\u{3a3}"), super::drive_wire_name("\u{3c2}"));
+        assert_ne!(super::drive_wire_name("Projects"), super::drive_wire_name("Project"));
+    }
+
+    // oracle: spec MS-RDPEFS §2.2.1.3 allows a colon only at the end of a device name without saying the server keeps it,
+    // so the conservative collision check treats a trailing colon as absent.
+    #[test]
+    fn drive_names_differing_only_by_trailing_colon_collide() {
+        assert_eq!(super::drive_wire_name("C"), super::drive_wire_name("C:"));
+        assert_eq!(super::drive_wire_name("data"), super::drive_wire_name("DATA:"));
+        assert_ne!(super::drive_wire_name("C"), super::drive_wire_name("C:D"));
+    }
+
+    #[cfg(windows)]
+    // oracle: mutant accept a second drive with the same sanitized wire name
+    #[test]
+    fn duplicate_wire_names_are_rejected_without_changing_drives() {
+        let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        let mut builder = buildable_builder();
+        assert!(builder.add_redirected_drive("Projects/Docs", &root_path, true).is_ok());
+        assert!(
+            builder
+                .add_redirected_drive("projects_docs", &root_path, false)
+                .is_err()
+        );
+        assert!(builder.add_redirected_drive("Other", &root_path, false).is_ok());
+        let Ok(config) = builder.build() else {
+            panic!("valid configuration");
+        };
+        assert_eq!(config.redirected_drives.len(), 2);
+        assert_eq!(config.redirected_drives[1].device_id, 2);
+    }
+
+    #[cfg(not(windows))]
+    // oracle: mutant allow drive redirection on unsupported platforms
+    #[test]
+    fn redirected_drives_are_rejected_on_unsupported_platforms() {
+        let mut builder = super::ffi::ConfigBuilder::new();
+
+        assert!(builder.add_redirected_drive("Shared", "C:\\shared", true).is_err());
+    }
+
+    #[test]
+    fn build_offers_remotefx_when_no_bitmap_config_is_set() {
+        let builder = buildable_builder();
 
         let Ok(config) = builder.build() else {
             panic!("a builder with every required field should build");
