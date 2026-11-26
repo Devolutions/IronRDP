@@ -84,7 +84,8 @@ var connector = ClientConnector.New(config, "127.0.0.1:3389");
 The root must be an existing, absolute, normalized drive-letter path.
 Relative, parent-directory, UNC, device and verbatim paths are rejected.
 Drive names must be distinct after device-name sanitization and Unicode uppercase conversion.
-The path syntax is checked when adding the drive; the directory is opened when the server initializes RDPDR.
+The path is checked and opened when adding the drive, then opened again when the connector is created or smartcard RDPDR is attached.
+Both steps happen before the server initializes RDPDR.
 Drive redirection is supported only on Windows; other platforms return an error.
 
 Call `ActiveStage.PollRdpdrDeferred()` on a short timer, such as every 50 ms, even while the server sends no frames.

@@ -29,7 +29,7 @@ internal static class SmokeTests
     {
         if (OperatingSystem.IsWindows())
         {
-            // oracle: ffi/README.md "Windows drive redirection"
+            // oracle: mutant discard a drive configured before connector creation
             yield return ("Windows config accepts multiple independently selected drives", () =>
             {
                 var builder = TlsConfigBuilder();
@@ -39,21 +39,23 @@ internal static class SmokeTests
                 AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
             });
 
-            // oracle: ffi/README.md "Windows drive redirection" requires normalized drive-letter paths
-            foreach (var (name, root) in new[]
+            // oracle: mutant accept an invalid root or name after rejecting it
+            foreach (var (caseName, displayName, root) in new[]
             {
-                ("relative", @"relative\folder"),
-                ("parent", @"C:\folder\..\other"),
-                ("UNC", @"\\server\share"),
-                ("device", @"\\.\C:\folder"),
-                ("verbatim", @"\\?\C:\folder"),
-                ("embedded NUL", "C:\\folder\0bad"),
+                ("relative root", "Invalid", @"relative\folder"),
+                ("parent root", "Invalid", @"C:\folder\..\other"),
+                ("UNC root", "Invalid", @"\\server\share"),
+                ("device root", "Invalid", @"\\.\C:\folder"),
+                ("verbatim root", "Invalid", @"\\?\C:\folder"),
+                ("embedded NUL root", "Invalid", "C:\\folder\0bad"),
+                ("empty name", "", WindowsDriveRoot()),
+                ("embedded NUL name", "bad\0name", WindowsDriveRoot()),
             })
             {
-                yield return ($"Windows drive config rejects {name} root without changing the builder", () =>
+                yield return ($"Windows drive config rejects {caseName} without changing the builder", () =>
                 {
                     var builder = TlsConfigBuilder();
-                    Throws<IronRdpException>(() => builder.AddRedirectedDrive("Invalid", root, false));
+                    Throws<IronRdpException>(() => builder.AddRedirectedDrive(displayName, root, false));
                     AddWindowsDrives(builder);
                     var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
                     connector.WithStaticChannelRdpdr("smoke-tests", 3);
@@ -61,21 +63,7 @@ internal static class SmokeTests
                 });
             }
 
-            // oracle: RedirectedDrive::new requires a nonempty name without NUL
-            foreach (var (name, displayName) in new[] { ("empty", ""), ("embedded NUL", "bad\0name") })
-            {
-                yield return ($"Windows drive config rejects {name} name without changing the builder", () =>
-                {
-                    var builder = TlsConfigBuilder();
-                    Throws<IronRdpException>(() => builder.AddRedirectedDrive(displayName, WindowsDriveRoot(), false));
-                    AddWindowsDrives(builder);
-                    var connector = ClientConnector.New(builder.Build(), "127.0.0.1:33890");
-                    connector.WithStaticChannelRdpdr("smoke-tests", 3);
-                    AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
-                });
-            }
-
-            // oracle: ffi/README.md assigns drive IDs from one and rejects a conflicting smartcard ID
+            // oracle: mutant reuse a redirected drive ID for the smartcard device
             yield return ("Windows smartcard ID collision leaves the connector usable", () =>
             {
                 var builder = TlsConfigBuilder();
@@ -92,7 +80,7 @@ internal static class SmokeTests
                 AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
             });
 
-            // oracle: ffi/README.md says smartcard and native audio preserve configured drives in either order
+            // oracle: mutant remove RDPDR after native playback when drives are configured
             yield return ("Windows drives and smartcard precede native playback", () =>
             {
                 var builder = TlsConfigBuilder();
@@ -106,7 +94,7 @@ internal static class SmokeTests
                 AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
             });
 
-            // oracle: ffi/README.md says smartcard and native audio preserve configured drives in either order
+            // oracle: mutant remove RDPDR after smartcard attachment when drives are configured
             yield return ("Windows native playback precedes smartcard with drives", () =>
             {
                 var builder = TlsConfigBuilder();
@@ -122,7 +110,7 @@ internal static class SmokeTests
         }
         else
         {
-            // oracle: user request limits drive redirection to Windows and requires unsupported platforms to fail explicitly
+            // oracle: mutant allow redirected drives on unsupported platforms
             yield return ("drive redirection rejects unsupported platforms", () =>
             {
                 var builder = ConfigBuilder.New();
@@ -139,7 +127,7 @@ internal static class SmokeTests
             AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
         });
 
-        // oracle: MS-RDPEFS Appendix A note 1 and ffi/README.md require RDPDR compatibility and native playback together
+        // oracle: mutant remove RDPDR compatibility when native playback is attached
         yield return ("native playback can replace the RDPDR silent channel", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
@@ -151,7 +139,7 @@ internal static class SmokeTests
             AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
         });
 
-        // oracle: ffi/README.md preserves an existing audio channel when attaching smartcard RDPDR
+        // oracle: mutant drop native playback when attaching smartcard RDPDR
         yield return ("smartcard RDPDR preserves existing native playback", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
@@ -162,7 +150,7 @@ internal static class SmokeTests
             AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
         });
 
-        // oracle: capture does not replace the silent channel that Windows RDPDR requires
+        // oracle: mutant remove RDPDR compatibility when capture-only audio is attached
         yield return ("capture-only audio preserves the RDPDR silent channel", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
@@ -173,7 +161,7 @@ internal static class SmokeTests
             AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
         });
 
-        // oracle: a rejected native audio attachment must not remove RDPDR's compatibility channel
+        // oracle: mutant remove RDPDR compatibility after rejecting native audio
         yield return ("rejected native playback leaves RDPDR and RDPSND usable", () =>
         {
             var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
@@ -188,7 +176,7 @@ internal static class SmokeTests
             AssertConnectorChannels(second, "rdpdr", "rdpsnd", "drdynvc");
         });
 
-        // oracle: an explicitly configured RDPSND channel must not be replaced by RDPDR
+        // oracle: mutant replace explicit static playback while attaching RDPDR
         yield return ("smartcard RDPDR preserves explicit static playback", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
@@ -199,7 +187,7 @@ internal static class SmokeTests
             AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
         });
 
-        // oracle: channel changes must not alter an in-progress connection
+        // oracle: mutant alter connector state after rejecting a late channel attachment
         yield return ("static playback cannot be attached after connecting starts", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");

@@ -1,6 +1,6 @@
 #[cfg(not(target_os = "android"))]
 mod native {
-    use super::{AudioChannelKind, audio_channel_kind};
+    use super::{AudioChannelKind, audio_channel_kind, has_audio_channel};
     use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
     use core::time::Duration;
     use std::borrow::Cow;
@@ -178,14 +178,8 @@ mod native {
             }
             let (playback_dvc, capture_dvc) =
                 if let Some(drdynvc) = connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
-                    let playback_in_use = AudioChannelKind::Playback
-                        .channel_names()
-                        .iter()
-                        .any(|name| drdynvc.has_channel_name(name));
-                    let capture_in_use = AudioChannelKind::Capture
-                        .channel_names()
-                        .iter()
-                        .any(|name| drdynvc.has_channel_name(name));
+                    let playback_in_use = has_audio_channel(drdynvc, AudioChannelKind::Playback);
+                    let capture_in_use = has_audio_channel(drdynvc, AudioChannelKind::Capture);
                     let playback_conflicts = self.playback && playback_in_use;
                     let capture_conflicts = self.capture && capture_in_use;
                     if playback_conflicts || capture_conflicts {
@@ -1700,6 +1694,10 @@ impl AudioChannelKind {
             Self::Capture => &[ironrdp_rdpeai::CHANNEL_NAME],
         }
     }
+}
+
+pub(crate) fn has_audio_channel(drdynvc: &ironrdp::dvc::DrdynvcClient, kind: AudioChannelKind) -> bool {
+    kind.channel_names().iter().any(|name| drdynvc.has_channel_name(name))
 }
 
 pub(crate) fn audio_channel_kind(channel_name: &str) -> Option<AudioChannelKind> {
