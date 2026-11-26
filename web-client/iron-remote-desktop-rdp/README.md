@@ -143,6 +143,20 @@ Before encoding an H.264 frame, ask `session.invokeExtension(cameraWanted())` ho
 
 [MS-RDPECAM §2.2.3.13 Sample Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
 
+## Session statistics
+
+`session.invokeExtension(stats())` returns the session's figures so far as a plain object.
+
+| Field                        | Meaning                                                                                                                                                                                                                                                               |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bytesReceived`, `bytesSent` | Bytes of the frames the session read and wrote after the connection sequence.                                                                                                                                                                                         |
+| `framesDrawn`                | Turns of the session loop that drew at least one region on the canvas.                                                                                                                                                                                                |
+| `network`                    | `null` until the server sends a Network Characteristics Result ([MS-RDPBCGR §2.2.14.1.5]); then `{ baseRttMs, averageRttMs, bandwidthKbps }` in milliseconds and kilobits per second, with `baseRttMs` and `bandwidthKbps` present once the server has reported them. |
+
+The figures stay readable after the session ends.
+
+[MS-RDPBCGR §2.2.14.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/228ffc5c-b60c-4d3e-9781-ac613f822fdf
+
 ## Virtual Printer
 
 Register `printJobStreamCallbacks` before connecting to enable the browser-side

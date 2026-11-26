@@ -42,7 +42,7 @@ use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
 use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
-use ironrdp_futures::{FramedWrite, single_sequence_step_read};
+use ironrdp_futures::FramedWrite;
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use tracing::{debug, error, info, trace, warn};
@@ -756,7 +756,14 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let (writer_tx, writer_rx) = mpsc::unbounded();
 
-        spawn_local(writer_task(writer_rx, rdp_writer, outbound_message_size_limit));
+        let stats = Rc::new(crate::stats::SessionStats::default());
+
+        spawn_local(writer_task(
+            Rc::clone(&stats),
+            writer_rx,
+            rdp_writer,
+            outbound_message_size_limit,
+        ));
 
         Ok(Session {
             desktop_size: connection_result.desktop_size,
@@ -771,6 +778,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             camera_callback,
             camera,
             monitor_layout_callback,
+            stats,
 
             input_events_rx: RefCell::new(Some(input_events_rx)),
             rdp_reader: RefCell::new(Some(rdp_reader)),
@@ -923,6 +931,7 @@ pub(crate) struct Session {
     /// Takes the frames JS pushes with `camera_sample`, when the camera is on.
     camera: Option<crate::camera::CameraSink>,
     monitor_layout_callback: Option<js_sys::Function>,
+    stats: Rc<crate::stats::SessionStats>,
 
     // Consumed when `run` is called
     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
@@ -1023,6 +1032,10 @@ impl iron_remote_desktop::Session for Session {
             .take()
             .expect("run called only once");
 
+        if let Some(network) = connection_result.network_characteristics {
+            self.stats.set_network(network);
+        }
+
         if let Some(layout) = &connection_result.monitor_layout {
             self.report_monitor_layout(&layout.monitors);
         }
@@ -1081,6 +1094,7 @@ impl iron_remote_desktop::Session for Session {
                 frame = framed.read_pdu().fuse() => {
                     let (action, payload) = frame.context("read frame")?;
                     trace!(?action, frame_length = payload.len(), "Frame received");
+                    self.stats.add_received(payload.len());
 
                     active_stage.process(&mut image, action, &payload, framed.last_read_at())?
                 }
@@ -1307,6 +1321,7 @@ impl iron_remote_desktop::Session for Session {
             // Check dynamic resize against an EGFX-capable server when changing this loop.
             sync_canvas(&mut gui, &image, &mut framebuffer_size)?;
 
+            let mut drew = false;
             for out in outputs {
                 match out {
                     ActiveStageOutput::ResponseFrame(frame) => {
@@ -1319,6 +1334,7 @@ impl iron_remote_desktop::Session for Session {
                         gui.draw(draw_buffer.filled_mut(), region)
                             .context("draw updated region")?;
                         draw_buffer.clear();
+                        drew = true;
                     }
                     ActiveStageOutput::PointerDefault => {
                         self.set_cursor_style(CursorStyle::Default)?;
@@ -1432,8 +1448,13 @@ impl iron_remote_desktop::Session for Session {
                         let mut connection_activation = activation_factory.create();
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
-                            let written =
-                                single_sequence_step_read(&mut framed, &mut connection_activation, &mut buf).await?;
+                            let written = counted_sequence_step_read(
+                                &self.stats,
+                                &mut framed,
+                                &mut connection_activation,
+                                &mut buf,
+                            )
+                            .await?;
 
                             if written.size().is_some() {
                                 self.writer_tx
@@ -1486,6 +1507,7 @@ impl iron_remote_desktop::Session for Session {
                     }
                     ActiveStageOutput::AutoDetect(request) => {
                         debug!(?request, "Auto-detect");
+                        self.stats.take_result(&request);
                     }
                     ActiveStageOutput::AutoReconnectCookie(_) => {
                         debug!("Server Auto-Reconnect Cookie received (automatic reconnection not implemented)");
@@ -1510,6 +1532,9 @@ impl iron_remote_desktop::Session for Session {
                     }
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
+            }
+            if drew {
+                self.stats.add_frame_drawn();
             }
         };
 
@@ -1610,6 +1635,10 @@ impl iron_remote_desktop::Session for Session {
         // to keep the iron-remote-desktop trait surface protocol-agnostic.
         iron_remote_desktop::extension_match! {
             match ext;
+            |stats: JsValue| {
+                let _ = stats;
+                return Ok(self.stats.to_js());
+            };
             |request_file_contents: JsValue| {
                 let obj = into_object(request_file_contents)?;
                 let stream_id = get_u32(&obj, "stream_id")?;
@@ -1946,7 +1975,24 @@ fn build_config(
     }
 }
 
+/// `ironrdp_futures::single_sequence_step_read`, with the frame it reads counted in the session's figures.
+async fn counted_sequence_step_read(
+    stats: &crate::stats::SessionStats,
+    framed: &mut ironrdp_futures::LocalFuturesFramed<ReadHalf<WebSocket>>,
+    sequence: &mut dyn connector::Sequence,
+    buf: &mut WriteBuf,
+) -> anyhow::Result<connector::Written> {
+    buf.clear();
+    let Some(hint) = sequence.next_pdu_hint() else {
+        return Ok(sequence.step_no_input(buf)?);
+    };
+    let pdu = framed.read_by_hint(hint).await.context("read frame by hint")?;
+    stats.add_received(pdu.len());
+    Ok(sequence.step(&pdu, framed.last_read_at(), buf)?)
+}
+
 async fn writer_task(
+    stats: Rc<crate::stats::SessionStats>,
     rx: mpsc::UnboundedReceiver<Vec<u8>>,
     rdp_writer: WriteHalf<WebSocket>,
     outbound_limit: Option<usize>,
@@ -1954,6 +2000,7 @@ async fn writer_task(
     debug!("writer task started");
 
     async fn inner(
+        stats: Rc<crate::stats::SessionStats>,
         mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
         mut rdp_writer: WriteHalf<WebSocket>,
         outbound_limit: Option<usize>,
@@ -1973,12 +2020,13 @@ async fn writer_task(
                     rdp_writer.flush().await.context("couldn't flush frame")?;
                 }
             }
+            stats.add_sent(frame.len());
         }
 
         Ok(())
     }
 
-    match inner(rx, rdp_writer, outbound_limit).await {
+    match inner(stats, rx, rdp_writer, outbound_limit).await {
         Ok(()) => debug!("writer task ended gracefully"),
         Err(e) => error!("writer task ended unexpectedly: {e:#}"),
     }
@@ -3282,3 +3330,7 @@ mod tests {
 #[cfg(test)]
 #[path = "monitor_layout_tests.rs"]
 mod monitor_layout_tests;
+
+#[cfg(test)]
+#[path = "stats_tests.rs"]
+mod stats_tests;

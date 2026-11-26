@@ -157,6 +157,30 @@ pub struct NetworkCharacteristics {
     pub average_rtt_ms: u32,
 }
 
+impl NetworkCharacteristics {
+    /// Takes a Network Characteristics Result on top of the one reported before.
+    ///
+    /// [MS-RDPBCGR] 2.2.14.1.5 makes `baseRTT` and `bandwidth` optional in each result, so a result without one
+    /// keeps the value reported before, and `averageRTT` is in every result. Any other request gives `None`.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/228ffc5c-b60c-4d3e-9781-ac613f822fdf
+    pub fn from_result(previous: Option<Self>, request: &rdp::autodetect::AutoDetectRequest) -> Option<Self> {
+        match request {
+            rdp::autodetect::AutoDetectRequest::NetworkCharacteristicsResult {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+                ..
+            } => Some(Self {
+                base_rtt_ms: base_rtt_ms.or_else(|| previous.and_then(|network| network.base_rtt_ms)),
+                bandwidth_kbps: bandwidth_kbps.or_else(|| previous.and_then(|network| network.bandwidth_kbps)),
+                average_rtt_ms: *average_rtt_ms,
+            }),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ConnectionResult {
     pub io_channel_id: u16,
@@ -1312,20 +1336,9 @@ impl ClientConnector {
                 let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
                 Written::from_size(written)
             }
-            AutoDetectRequest::NetworkCharacteristicsResult {
-                base_rtt_ms,
-                bandwidth_kbps,
-                average_rtt_ms,
-                ..
-            } => {
-                // [MS-RDPBCGR] 2.2.14.1.5 makes baseRTT and bandwidth optional in each result.
-                // A result without one keeps the value reported before, and averageRTT is in every result.
-                let previous = self.network_characteristics;
-                self.network_characteristics = Some(NetworkCharacteristics {
-                    base_rtt_ms: base_rtt_ms.or_else(|| previous.and_then(|network| network.base_rtt_ms)),
-                    bandwidth_kbps: bandwidth_kbps.or_else(|| previous.and_then(|network| network.bandwidth_kbps)),
-                    average_rtt_ms,
-                });
+            request @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
+                self.network_characteristics =
+                    NetworkCharacteristics::from_result(self.network_characteristics, &request);
                 Ok(Written::Nothing)
             }
             // A Stop reaching here with any other requestType means a nonconformant

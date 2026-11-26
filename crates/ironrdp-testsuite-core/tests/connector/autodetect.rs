@@ -20,11 +20,13 @@ use std::sync::Arc;
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::{
     ClientConnector, ClientConnectorState, ConnectorResult, LicenseCache, LicenseExchangeSequence,
-    LicenseExchangeState, MonotonicInstant, Sequence as _, Written,
+    LicenseExchangeState, MonotonicInstant, NetworkCharacteristics, Sequence as _, Written,
 };
 use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
+use ironrdp_pdu::rdp::autodetect::{
+    AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, NETCHAR_RESULT_ALL, NETCHAR_RESULT_RTT,
+};
 use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlHeader, ShareControlPdu};
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_license::{
@@ -76,6 +78,92 @@ fn connect_time_autodetect_request_is_answered_and_phase_continues() {
     assert!(
         matches!(connector.state, ClientConnectorState::ConnectTimeAutoDetection { .. }),
         "the connector keeps listening after answering an auto-detect request"
+    );
+}
+
+fn network_characteristics_result(
+    request_type: u16,
+    base_rtt_ms: Option<u32>,
+    bandwidth_kbps: Option<u32>,
+    average_rtt_ms: u32,
+) -> AutoDetectRequest {
+    AutoDetectRequest::NetworkCharacteristicsResult {
+        sequence_number: 1,
+        request_type,
+        base_rtt_ms,
+        bandwidth_kbps,
+        average_rtt_ms,
+    }
+}
+
+#[test]
+fn network_characteristics_result_keeps_what_a_later_result_omits() {
+    // oracle: spec MS-RDPBCGR §2.2.14.1.5 (baseRTT and bandwidth are optional in each result)
+    // oracle: mutant a later result that drops the base RTT or the bandwidth reported before
+    let mut connector = connect_time_autodetect_connector();
+
+    let first = connector
+        .__test_respond_to_connect_time_autodetect(network_characteristics_result(
+            NETCHAR_RESULT_ALL,
+            Some(10),
+            Some(5_000),
+            12,
+        ))
+        .unwrap();
+    let second = connector
+        .__test_respond_to_connect_time_autodetect(network_characteristics_result(
+            NETCHAR_RESULT_RTT,
+            Some(8),
+            None,
+            11,
+        ))
+        .unwrap();
+    let after_another_request = connector
+        .__test_respond_to_connect_time_autodetect(AutoDetectRequest::rtt_connect_time(2))
+        .unwrap();
+
+    assert_eq!(
+        first,
+        Some(NetworkCharacteristics {
+            base_rtt_ms: Some(10),
+            bandwidth_kbps: Some(5_000),
+            average_rtt_ms: 12,
+        })
+    );
+    assert_eq!(
+        second,
+        Some(NetworkCharacteristics {
+            base_rtt_ms: Some(8),
+            bandwidth_kbps: Some(5_000),
+            average_rtt_ms: 11,
+        })
+    );
+    assert_eq!(after_another_request, second);
+}
+
+#[test]
+fn from_result_takes_only_a_network_characteristics_result() {
+    // oracle: mutant a request of another kind taken as a result
+    let previous = Some(NetworkCharacteristics {
+        base_rtt_ms: Some(10),
+        bandwidth_kbps: None,
+        average_rtt_ms: 12,
+    });
+
+    assert_eq!(
+        NetworkCharacteristics::from_result(previous, &AutoDetectRequest::rtt_connect_time(1)),
+        None
+    );
+    assert_eq!(
+        NetworkCharacteristics::from_result(
+            previous,
+            &network_characteristics_result(NETCHAR_RESULT_RTT, None, None, 9)
+        ),
+        Some(NetworkCharacteristics {
+            base_rtt_ms: Some(10),
+            bandwidth_kbps: None,
+            average_rtt_ms: 9,
+        })
     );
 }
 
