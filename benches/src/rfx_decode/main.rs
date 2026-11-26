@@ -7,7 +7,10 @@
 //! * `frame/*` -- a full-screen frame through `rfx::DecodingContext::decode`.
 //!
 //! `entropy/*` is a separate comparison: the same full-screen frame decoded
-//! with RLGR1 and RLGR3. All other groups use RLGR3.
+//! with RLGR1 and RLGR3. All other classic groups use RLGR3.
+//!
+//! `progressive/*` decodes a full-screen RemoteFX Progressive update of simple tiles through `ProgressiveDecoder::decode_bitmap`.
+//! Build with the `rayon` feature to decode its tiles in parallel.
 //!
 //! Throughput is reported in pixels, so results are comparable across
 //! resolutions and directly convertible to frames per second.
@@ -16,6 +19,7 @@
 
 mod entropy;
 mod frame;
+mod progressive;
 mod stage;
 mod tile;
 
@@ -25,5 +29,12 @@ use ironrdp::pdu::codecs::rfx::EntropyAlgorithm;
 /// IronRDP advertises RLGR3 in RemoteFX client caps.
 const ENTROPY_ALGORITHM: EntropyAlgorithm = EntropyAlgorithm::Rlgr3;
 
-criterion_group!(benches, frame::frame, tile::tile, entropy::entropy, stage::stage);
+criterion_group!(
+    benches,
+    frame::frame,
+    tile::tile,
+    entropy::entropy,
+    stage::stage,
+    progressive::progressive
+);
 criterion_main!(benches);

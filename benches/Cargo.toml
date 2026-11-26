@@ -18,6 +18,8 @@ harness = false
 default = ["qoi", "qoiz"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
+# Decodes large Progressive regions' tiles on several threads.
+rayon = ["dep:ironrdp-graphics", "ironrdp-graphics/rayon"]
 
 [dependencies]
 anyhow = "1"
@@ -29,6 +31,7 @@ ironrdp = { path = "../crates/ironrdp", features = [
     "pdu",
     "__bench",
 ] }
+ironrdp-graphics = { path = "../crates/ironrdp-graphics", optional = true }
 pico-args = "0.5"
 tokio = { version = "1", features = ["sync", "fs", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
