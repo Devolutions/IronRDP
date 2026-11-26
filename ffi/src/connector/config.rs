@@ -15,12 +15,15 @@ pub(crate) struct RedirectedDriveConfig {
 }
 
 #[cfg(any(windows, test))]
-/// Returns the drive name as announced in DeviceData, uppercased for duplicate detection.
+/// Returns the drive name as announced in DeviceData, without a trailing colon and uppercased, for duplicate detection.
 ///
 /// The uppercase fold and the dropped trailing colon are a deliberately conservative client-side policy:
 /// Windows resolves `\\tsclient\<name>` case-insensitively,
-/// MS-RDPEFS 2.2.1.3 allows a colon only at the end of a device name without saying whether the server keeps it,
+/// [MS-RDPEFS] 2.2.1.3, "Device Announce Header (DEVICE_ANNOUNCE)", allows a colon only at the end of a device name
+/// without saying whether the server keeps it,
 /// and both can only reject more names, never accept a colliding one.
+///
+/// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
 fn drive_wire_name(name: &str) -> String {
     // The device ID is only used to retrieve the single entry in this temporary collection.
     let mut devices = ironrdp::rdpdr::pdu::efs::Devices::new();
