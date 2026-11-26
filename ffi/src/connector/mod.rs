@@ -5,11 +5,52 @@ pub mod state;
 
 #[derive(Default)]
 pub(crate) struct RdpdrConfiguration {
-    drives: Vec<config::RedirectedDriveConfig>,
+    drives: Vec<config::RedirectedDrive>,
     smartcard: bool,
     audio_playback_forced: bool,
     /// INVARIANT: This is true only while the automatically installed silent RDPSND channel is present.
     compatibility_rdpsnd: bool,
+}
+
+impl RdpdrConfiguration {
+    fn create_rdpdr(
+        &self,
+        computer_name: &str,
+        smart_card_device_id: Option<u32>,
+    ) -> Result<ironrdp::rdpdr::Rdpdr, Box<crate::error::ffi::IronRdpError>> {
+        #[cfg(windows)]
+        {
+            if smart_card_device_id.is_some_and(|id| self.drives.iter().any(|drive| drive.device_id() == id)) {
+                return Err("smartcard device ID conflicts with a redirected drive".into());
+            }
+
+            let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(self.drives.clone())
+                .map_err(|error| {
+                    crate::error::GenericError(
+                        anyhow::Error::new(error).context("invalid RDPDR backend configuration"),
+                    )
+                })?
+                .with_smartcard(smart_card_device_id.is_some());
+            let initial_drives = factory.initial_drives();
+            let mut rdpdr = ironrdp::rdpdr::Rdpdr::new(Box::new(factory.build()), computer_name.to_owned());
+            if !initial_drives.is_empty() {
+                rdpdr = rdpdr.with_drives(Some(initial_drives));
+            }
+            if let Some(device_id) = smart_card_device_id {
+                rdpdr = rdpdr.with_smartcard(device_id);
+            }
+            Ok(rdpdr)
+        }
+        #[cfg(not(windows))]
+        {
+            let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(ironrdp::rdpdr::NoopRdpdrBackend);
+            let mut rdpdr = ironrdp::rdpdr::Rdpdr::new(backend, computer_name.to_owned());
+            if let Some(device_id) = smart_card_device_id {
+                rdpdr = rdpdr.with_smartcard(device_id);
+            }
+            Ok(rdpdr)
+        }
+    }
 }
 
 /// Whether `needed` more static channels fit under the protocol limit.
@@ -69,96 +110,27 @@ pub mod ffi {
             drdynvc.has_channel_name_of_type::<DirectDvcChannelProcessor>(channel_name)
         }
 
-        fn create_rdpdr(
-            &self,
-            computer_name: &str,
-            smart_card_device_id: Option<u32>,
-        ) -> Result<ironrdp::rdpdr::Rdpdr, Box<IronRdpError>> {
-            #[cfg(windows)]
-            {
-                let drives = self
-                    .2
-                    .drives
-                    .iter()
-                    .map(|drive| {
-                        ironrdp_rdpdr_native::RedirectedDrive::new(
-                            drive.device_id,
-                            drive.display_name.clone(),
-                            std::path::PathBuf::from(&drive.root_path),
-                            drive.read_only,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| {
-                        crate::error::GenericError(
-                            anyhow::Error::new(error).context("invalid redirected drive configuration"),
-                        )
-                    })?;
-
-                if smart_card_device_id.is_some_and(|id| self.2.drives.iter().any(|drive| drive.device_id == id)) {
-                    return Err("smartcard device ID conflicts with a redirected drive".into());
-                }
-
-                let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(drives)
-                    .map_err(|error| {
-                        crate::error::GenericError(
-                            anyhow::Error::new(error).context("invalid RDPDR backend configuration"),
-                        )
-                    })?
-                    .with_smartcard(smart_card_device_id.is_some());
-                let initial_drives = factory.initial_drives();
-                let mut rdpdr = ironrdp::rdpdr::Rdpdr::new(Box::new(factory.build()), computer_name.to_owned());
-                if !initial_drives.is_empty() {
-                    rdpdr = rdpdr.with_drives(Some(initial_drives));
-                }
-                if let Some(device_id) = smart_card_device_id {
-                    rdpdr = rdpdr.with_smartcard(device_id);
-                }
-                Ok(rdpdr)
-            }
-            #[cfg(not(windows))]
-            {
-                if !self.2.drives.is_empty() {
-                    return Err("drive redirection is supported only on Windows".into());
-                }
-                let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(ironrdp::rdpdr::NoopRdpdrBackend);
-                let mut rdpdr = ironrdp::rdpdr::Rdpdr::new(backend, computer_name.to_owned());
-                if let Some(device_id) = smart_card_device_id {
-                    rdpdr = rdpdr.with_smartcard(device_id);
-                }
-                Ok(rdpdr)
-            }
-        }
-
         pub fn new(config: &Config, client_addr: &str) -> Result<Box<ClientConnector>, Box<IronRdpError>> {
             let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
 
-            let connector = ironrdp::connector::ClientConnector::new(config.connector.clone(), client_addr);
-            let mut client = ClientConnector(
-                Some(connector),
-                None,
-                super::RdpdrConfiguration {
-                    drives: config.redirected_drives.clone(),
-                    audio_playback_forced: config.connector.audio_playback_mode
-                        == Some(ironrdp::connector::AudioPlaybackMode::Client),
-                    ..Default::default()
-                },
-            );
-            if !client.2.drives.is_empty() {
+            let mut connector = ironrdp::connector::ClientConnector::new(config.connector.clone(), client_addr);
+            let mut rdpdr_configuration = super::RdpdrConfiguration {
+                drives: config.redirected_drives.clone(),
+                audio_playback_forced: config.connector.audio_playback_mode
+                    == Some(ironrdp::connector::AudioPlaybackMode::Client),
+                ..Default::default()
+            };
+            if !rdpdr_configuration.drives.is_empty() {
                 // UNTESTED: The drive-only shape, without smartcard or audio attachment, is not exercised through RDPDR I/O.
                 // `configured_drives_survive_smartcard_then_audio` and `configured_drives_survive_audio_then_smartcard`
                 // check read-only enforcement through the same `create_rdpdr` path; extend them if this path diverges.
-                let rdpdr = client.create_rdpdr(&config.connector.client_name, None)?;
-                let connector = client
-                    .0
-                    .as_mut()
-                    .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
+                let rdpdr = rdpdr_configuration.create_rdpdr(&config.connector.client_name, None)?;
                 connector.attach_static_channel(rdpdr);
-                super::attach_rdpdr_compatibility_rdpsnd(connector, client.2.audio_playback_forced);
-                client.2.compatibility_rdpsnd = true;
+                super::attach_rdpdr_compatibility_rdpsnd(&mut connector, rdpdr_configuration.audio_playback_forced);
+                rdpdr_configuration.compatibility_rdpsnd = true;
             }
 
-            Ok(Box::new(client))
+            Ok(Box::new(ClientConnector(Some(connector), None, rdpdr_configuration)))
         }
 
         // FIXME: Naming: since this is not a builder pattern, use "attach"?
@@ -287,7 +259,7 @@ pub mod ffi {
                 return Err("no space for RDPDR and RDPSND channels".into());
             }
 
-            let rdpdr = self.create_rdpdr(computer_name, Some(smart_card_device_id))?;
+            let rdpdr = self.2.create_rdpdr(computer_name, Some(smart_card_device_id))?;
             let connector = self
                 .0
                 .as_mut()
