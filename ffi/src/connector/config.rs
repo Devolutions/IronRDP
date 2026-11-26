@@ -537,6 +537,7 @@ mod tests {
         );
         assert_eq!(super::drive_wire_name("\u{c4}"), super::drive_wire_name("\u{e4}"));
         assert_eq!(super::drive_wire_name("\u{3a3}"), super::drive_wire_name("\u{3c2}"));
+        // oracle: mutant collapse distinct names to one wire name
         assert_ne!(super::drive_wire_name("Projects"), super::drive_wire_name("Project"));
     }
 

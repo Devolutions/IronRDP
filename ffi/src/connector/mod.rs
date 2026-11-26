@@ -737,7 +737,7 @@ mod tests {
         ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")
     }
 
-    // oracle: mutant enable playback when the caller leaves its setting unspecified
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn smartcard_compatibility_channel_keeps_default_playback_disabled() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(None)?;
@@ -798,6 +798,41 @@ mod tests {
         Ok(())
     }
 
+    fn connector_with_static_playback() -> Result<Box<ClientConnector>, &'static str> {
+        let mut connector = default_connector()?;
+        connector.with_static_channel_rdp_snd().map_err(|_| "static playback")?;
+        Ok(connector)
+    }
+
+    fn decided_playback(connector: &ClientConnector) -> Result<Option<PlaybackRequest>, &'static str> {
+        Ok(connector.0.as_ref().ok_or("connector")?.config.audio_playback_mode)
+    }
+
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
+    #[test]
+    fn first_step_with_input_decides_playback() -> Result<(), &'static str> {
+        let mut connector = connector_with_static_playback()?;
+        connector
+            .step(&[], &mut WriteBuf::new())
+            .map_err(|_| "first connection step")?;
+        assert_eq!(decided_playback(&connector)?, Some(PlaybackRequest::Client));
+        Ok(())
+    }
+
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
+    #[test]
+    fn explicit_security_protocol_initiation_decides_playback() -> Result<(), &'static str> {
+        let mut connector = connector_with_static_playback()?;
+        connector
+            .initiate_with_security_protocol(
+                ironrdp::pdu::nego::SecurityProtocol::HYBRID.bits(),
+                &mut WriteBuf::new(),
+            )
+            .map_err(|_| "connection request")?;
+        assert_eq!(decided_playback(&connector)?, Some(PlaybackRequest::Client));
+        Ok(())
+    }
+
     // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602557
     #[test]
     fn capture_only_native_audio_requests_no_playback() -> Result<(), &'static str> {
@@ -807,7 +842,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: mutant ignore an explicit request to disable audio playback
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn explicit_playback_disablement_is_followed_with_a_playback_channel() -> Result<(), &'static str> {
         let mut connector = connector_with_playback_setting(Some(AudioPlaybackMode::Disabled))?;
@@ -994,7 +1029,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    // oracle: mutant enable audio playback when installing the drive compatibility channel
+    // oracle: intent ffi/src/connector/INTENT.md §playback-request
     #[test]
     fn drive_compatibility_channel_keeps_playback_disabled_by_default() -> Result<(), &'static str> {
         let mut connector = connector_with_drive(None)?;
