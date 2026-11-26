@@ -29,7 +29,7 @@ internal static class SmokeTests
     {
         if (OperatingSystem.IsWindows())
         {
-            // oracle: mutant discard a drive configured before connector creation
+            // oracle: mutant discard all drives configured before connector creation
             yield return ("Windows config accepts multiple independently selected drives", () =>
             {
                 var builder = TlsConfigBuilder();
@@ -39,7 +39,7 @@ internal static class SmokeTests
                 AssertConnectorChannels(connector, "rdpdr", "rdpsnd");
             });
 
-            // oracle: mutant accept an invalid root or name after rejecting it
+            // oracle: mutant accept an invalid root or name
             foreach (var (caseName, displayName, root) in new[]
             {
                 ("relative root", "Invalid", @"relative\folder"),
@@ -139,7 +139,7 @@ internal static class SmokeTests
             AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
         });
 
-        // oracle: mutant drop native playback when attaching smartcard RDPDR
+        // oracle: mutant remove DRDYNVC when attaching smartcard RDPDR
         yield return ("smartcard RDPDR preserves existing native playback", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
@@ -150,7 +150,7 @@ internal static class SmokeTests
             AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
         });
 
-        // oracle: mutant remove RDPDR compatibility when capture-only audio is attached
+        // oracle: mutant remove RDPDR when capture-only audio is attached
         yield return ("capture-only audio preserves the RDPDR silent channel", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
@@ -161,7 +161,7 @@ internal static class SmokeTests
             AssertConnectorChannels(connector, "rdpdr", "rdpsnd", "drdynvc");
         });
 
-        // oracle: mutant remove RDPDR compatibility after rejecting native audio
+        // oracle: mutant remove RDPDR after rejecting native audio
         yield return ("rejected native playback leaves RDPDR and RDPSND usable", () =>
         {
             var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
