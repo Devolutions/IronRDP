@@ -1125,6 +1125,7 @@ test("automatic review requires exact-head CI and only reruns after a later push
     "utf8",
   ));
   assert.equal(classifierConfig.max_request_retries, 4);
+  assert.equal(classifierConfig.max_output_repair_attempts, 2);
   assert.equal(classifierConfig.stage_timeout_ms, 1_800_000);
   assert.equal(classifierConfig.stream_idle_timeout_ms, 300_000);
   assert.doesNotMatch(classifier, /max-request-retries:/);
@@ -7267,6 +7268,47 @@ test("reviewer actions retry four provider requests and repair output in convers
   }
   assert.match(workflowJob(workflow, "specialists"), /timeout-minutes: 130/);
   assert.match(workflowJob(workflow, "general"), /timeout-minutes: 130/);
+});
+
+test("every stage prompt states the character limit of each free-text schema field", () => {
+  // A model writes prose against the prompt, not against `maxLength` buried in the schema, and the
+  // fields the normalizer leaves strict fail the whole stage once repairs run out.
+  const proseLimits = (schema, at = "", found = []) => {
+    if (schema?.type === "string" && schema.maxLength !== undefined && schema.pattern === undefined) {
+      found.push([at, schema.maxLength]);
+    }
+    for (const [key, child] of Object.entries(schema?.properties || {})) {
+      proseLimits(child, at === "" ? key : `${at}.${key}`, found);
+    }
+    if (schema?.items) proseLimits(schema.items, `${at}[]`, found);
+    return found;
+  };
+  const reviewerMatches = (condition, reviewer) => {
+    if (condition.const !== undefined) return condition.const === reviewer;
+    if (condition.enum !== undefined) return condition.enum.includes(reviewer);
+    if (condition.not !== undefined) return !reviewerMatches(condition.not, reviewer);
+    throw new Error("unsupported reviewer condition");
+  };
+
+  for (const agent of ["classifier", ...REVIEWER_ORDER, "general-reviewer"]) {
+    const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
+    const repositoryRoot = path.join(__dirname, "..", "..");
+    const prompt = fs.readFileSync(path.join(repositoryRoot, config.prompt_file), "utf8");
+    const schema = JSON.parse(fs.readFileSync(path.join(repositoryRoot, config.schema_file), "utf8"));
+    // A reviewer whose schema rule forbids references never writes a reference heading.
+    const unusedReferences = (schema.allOf || []).some((rule) =>
+      rule.if?.properties?.reviewer !== undefined &&
+      reviewerMatches(rule.if.properties.reviewer, config.id) &&
+      rule.then?.properties?.findings?.items?.properties?.references?.maxItems === 0);
+    const limits = proseLimits(schema)
+      .filter(([field]) => !(unusedReferences && field.includes(".references[]")));
+    assert.notEqual(limits.length, 0, agent);
+    for (const [field, limit] of limits) {
+      // The whole number must match, so `summary` 1000 in a prompt does not satisfy a limit of 100.
+      const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      assert.match(prompt, new RegExp(`\`${escaped}\` ${limit}(?![0-9])`), `${agent} must state ${field} ${limit}`);
+    }
+  }
 });
 
 test("every model stage uses its stage-specific trusted output normalizer", () => {
