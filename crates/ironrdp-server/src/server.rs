@@ -6644,6 +6644,30 @@ impl RdpServer {
             }
         }
 
+        // A client implementing the graphics pipeline sets RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL in its Client Core Data
+        // (MS-RDPEGFX 1.5.1), so a client that didn't set it isn't offered the channel, and the display gets no EGFX
+        // server to wait on.
+        // The channel is found by the types this crate registers it under, so a GraphicsPipelineServer an embedder
+        // wraps in its own dynamic channel processor is still offered.
+        // INVARIANT: DRDYNVC hasn't started yet, so the channel is still pending, and closing it only unregisters it
+        // without putting anything on the wire.
+        // The flags come from the Basic Settings Exchange, which a reactivation doesn't repeat (MS-RDPBCGR 1.3.1.3), so
+        // this happens once per connection.
+        #[cfg(feature = "egfx")]
+        if !result.reactivation
+            && !result
+                .client_early_capability_flags
+                .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL)
+        {
+            conn.gfx_handle = None;
+            if let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>()
+                && let Some(channel_id) = crate::gfx::egfx_channel_id(drdynvc)
+            {
+                let _ = drdynvc.close_channel(channel_id);
+                debug!("Not offering the graphics pipeline to a client that didn't advertise it");
+            }
+        }
+
         // A client can join the rdpsnd channel although it asked for no audio redirection, as some do for device
         // redirection, so the channel is left joined but never started: no Server Audio Formats PDU goes out, and the
         // sound handler is never asked to start.
