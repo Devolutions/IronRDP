@@ -136,6 +136,11 @@ pub mod ffi {
     #[diplomat::enum_convert(ironrdp::connector::AudioPlaybackMode)]
     pub enum AudioPlaybackMode {
         /// Redirect audio to this computer.
+        ///
+        /// This is also the default.
+        /// The connector asks for audio only when a playback channel is attached when the connection starts,
+        /// not counting the silent RDPSND channel installed for drive or smartcard redirection.
+        /// Otherwise it asks for no audio.
         Client,
         /// Leave audio playing on the remote computer.
         Server,
@@ -389,7 +394,8 @@ pub mod ffi {
 
                 enable_server_pointer: self.enable_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
-                enable_audio_playback: matches!(self.audio_playback_mode, None | Some(AudioPlaybackMode::Client)),
+                // The connector decides the playback request when the connection starts.
+                enable_audio_playback: false,
                 audio_playback_mode: self.audio_playback_mode.map(Into::into),
                 enable_audio_capture: false,
                 request_data: None,
