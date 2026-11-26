@@ -1351,6 +1351,8 @@ impl DeviceAnnounceHeader {
         name.char_indices()
             .map(|(i, c)| match c {
                 '<' | '>' | '"' | '/' | '\\' | '|' | '\0' => '_',
+                // `i` is a byte offset and a colon is one byte,
+                // so the colon ends `name` exactly when `i + 1` is its length.
                 ':' if i + 1 != name.len() => '_',
                 _ => c,
             })
