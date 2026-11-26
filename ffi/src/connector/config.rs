@@ -526,7 +526,7 @@ mod tests {
         assert!(!config.redirected_drives[1].read_only);
     }
 
-    // oracle: mutant sanitize two distinct names to different wire names
+    // oracle: intent ffi/src/connector/INTENT.md §drive-name-collisions
     // The colliding pairs follow the drive DeviceData encoding in ironrdp-rdpdr (`DeviceAnnounceHeader::new_drive`)
     // followed by Unicode uppercase conversion; no specification defines this mapping.
     #[test]
@@ -550,7 +550,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    // oracle: mutant accept a second drive with the same sanitized wire name
+    // oracle: intent ffi/src/connector/INTENT.md §drive-name-collisions
     #[test]
     fn duplicate_wire_names_are_rejected_without_changing_drives() {
         let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
