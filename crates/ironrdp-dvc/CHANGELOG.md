@@ -6,6 +6,143 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.10.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.10.0...ironrdp-dvc-v0.10.1)] - 2026-11-26
+
+### <!-- 1 -->Features
+
+- Support Remote Credential Guard over RDPEAR ([#2256](https://github.com/Devolutions/IronRDP/issues/2256)) ([376eb8f566](https://github.com/Devolutions/IronRDP/commit/376eb8f56634e5c92d7137886e62ddeb6bbb280f)) 
+
+  Remote Credential Guard redirects Kerberos and NTLMv2 operations over
+  the `Microsoft::Windows::RDS::AuthRedirection` dynamic virtual channel
+  (MS-RDPEAR) so TGT keys and password hashes remain client-owned instead
+  of delegating credentials through CredSSP `TSTicketCreds`.
+  
+  Add `ironrdp-rdpear` with `no_std`/`alloc` outer envelope framing,
+  strict ASN.1 DER `TSRemoteGuardInnerPacket` codecs, and portable NDR32
+  type-serialization codecs for all 23 MS-RDPEAR Kerberos and NTLM
+  request/response calls under both the published IDL profile and the
+  Windows-native wire profile. Bound inbound static and dynamic channel
+  reassembly before fragment retention via
+  `SvcProcessor::max_message_size`, `DvcProcessor::max_message_size`, and
+  `DrdynvcClient::with_max_transport_message_size`.
+  
+  Wire the opt-in `remote-guard` feature through `ironrdp-connector`, the
+  async/blocking/Tokio drivers, `ironrdp-cfg`, `ironrdp-client`,
+  `ironrdp-daemon`, and `ironrdp-agent` (`--remote-guard` and
+  `ironrdp_remote_guard` with `Disabled`, `Negotiate`, `Ntlm`, and
+  `Kerberos` modes) backed by `sspi` 0.23.1. RCG requires `HYBRID` or
+  `HYBRID_EX` with `REDIRECTED_AUTHENTICATION_MODE_SUPPORTED`, strict TLS
+  validation, and a completed CredSSP context handoff, and omits
+  passwords, smart-card PINs, and auto-reconnect cookies from Client Info.
+
+- Bound clients' channel message sizes ([#2430](https://github.com/Devolutions/IronRDP/issues/2430)) ([5baa5e1d0b](https://github.com/Devolutions/IronRDP/commit/5baa5e1d0bff162bdb52270b49ecb005c4530a21)) 
+
+  None of the channels ironrdp-server attaches sets a message limit
+  (`SvcProcessor::max_message_size`, `DvcProcessor::max_message_size`), so
+  a client can make the server keep a message up to its declared 32-bit
+  length, about 4 GiB, on each static channel and each dynamic channel.
+
+- Add MS-RDPEWA WebAuthn RPC processor ([#2444](https://github.com/Devolutions/IronRDP/issues/2444)) ([e6b323657e](https://github.com/Devolutions/IronRDP/commit/e6b323657ef8da22cd74ba051e51da54cd436e82)) 
+
+  Add `RdpewaServerRpc` and `RdpewaWebAuthnRequest` to drive
+  server-initiated `[MS-RDPEWA]` (`WebAuthN_Channel`) `IUVPAA`,
+  `WEB_AUTHN` (`MakeCredential` and `GetAssertion`), and `CANCEL_CUR_OP`
+  RPCs, bounding inbound DVC messages to 256 KiB and aborting unanswered
+  ceremonies with `E_ABORT` on channel close, drop, or declined channel
+  creation via `DvcServerProcessor::creation_failed`.
+  
+  Order `CborKey` according to CTAP2 section 6 and RFC 8949 section 4.2.3
+  canonical CBOR (by CBOR major type first, then encoded byte length, then
+  lexicographically by encoded bytes), align `WebAuthnPara` and
+  `DeviceInfo` with `[MS-RDPEWA]` wire field names (`requireResident`,
+  `preferResident`, `attestationPreference`, and lowercase
+  `manufacturer`/`product` aliases) and user-verification flag constants
+  (`CTAPCLT_UV_*`), and read top-level `request` bytes for `CancelCurOp`
+  in `RdpewaClient`.
+
+- Expose direct dynamic virtual channels ([#2476](https://github.com/Devolutions/IronRDP/issues/2476)) ([2064ca1c56](https://github.com/Devolutions/IronRDP/commit/2064ca1c564a70c685287010f80fbdb928b55b57)) 
+
+  Let .NET clients use dynamic virtual channels without a named pipe.
+  Expose open, data, and close events with owned payloads and an endpoint
+  ID that prevents writes to a reopened channel from using a stale
+  endpoint. Encode outbound data and close requests through the existing
+  RDP session, without changing the pipe-proxy API.
+
+### <!-- 4 -->Bug Fixes
+
+- Harden channel lifecycle and pipe proxy ([#2275](https://github.com/Devolutions/IronRDP/issues/2275)) ([a28a57e4f1](https://github.com/Devolutions/IronRDP/commit/a28a57e4f1989ac16bb3d9d9296f1a7bb85147b0)) 
+
+  Emit a single `DATA` PDU for empty and 1,590-byte DVC messages instead
+  of dropping zero-length payloads or starting 1,590-byte payloads with
+  `DATA_FIRST`.
+  
+  Add `DrdynvcServer::is_ready` and
+  `DrdynvcServer::create_channel_boxed_with`, suppress `ClosePdu` for
+  pending or failed server channels, discard late in-flight data and
+  cancelled `CreateResponse` PDUs for retired channel IDs, and close only
+  the offending dynamic channel when a server processor's
+  `max_message_size` limit is exceeded.
+  
+  Add `DvcNamedPipeProxy::new_async`, cancel pending pipe writes and
+  reconnect sleeps on proxy drop without blocking the Tokio I/O driver,
+  and register client DVC pipe proxies through a channel factory with
+  async backpressure on the RDP input queue.
+  
+  ---------
+
+- Wait for new caps on a reopened channel ([#2296](https://github.com/Devolutions/IronRDP/issues/2296)) ([06cdca22f3](https://github.com/Devolutions/IronRDP/commit/06cdca22f36d0438c94d6b5b9fb5a3a327f554c4)) 
+
+  A display control channel the server closes and reopens could send a
+  monitor layout before the server's new capabilities arrived.
+  
+  Keep pre-registered channel processors available for reopening, but
+  clear DisplayControl capabilities on close so layouts wait for fresh
+  server capabilities. Custom listeners and factories retain control over
+  subsequent opens. Release EGFX graphics state when the channel closes,
+  after saving its persistent bitmap cache, and wait for pipe proxy
+  workers and pending filesystem operations to finish before starting a
+  replacement.
+  
+  ---------
+
+- Drop data for a channel the client declined instead of failing ([#2341](https://github.com/Devolutions/IronRDP/issues/2341)) ([a7ab89bd84](https://github.com/Devolutions/IronRDP/commit/a7ab89bd842baca5aa8b336c7e5d60782201485f)) 
+
+  A server can send data on a dynamic channel before it sees the client
+  decline that channel in its Create Response. GNOME Remote Desktop does
+  this for AUDIO_PLAYBACK_DVC right after the Create Request, so a client
+  without an audio channel failed `process` with "access to non existing
+  DVC channel" and the session ended about a second after connecting.
+  
+  Declining a channel now closes it from the client's side, as closing it
+  does: its ID joins the recent client-closed channels, whose data is
+  dropped. The decline is remembered on the transport the Create Request
+  came on, so a channel declined on a Soft-Sync tunnel drops its data
+  there, and a declined channel the server then lists in a Soft-Sync
+  request drops its data on that tunnel too, as a closed one does. A
+  server Close for the ID, or a Create Request for it that the client
+  accepts, settles the decline. A channel declined again on the same
+  transport doesn't take another place in that history.
+  
+  Soft-Sync now checks every listed channel before it remembers any of
+  them on its tunnel: remembering one can forget the oldest entry of the
+  bounded history, which could be a closed or declined channel listed
+  after it.
+  
+  Data for a channel the server never created is still an error, and a
+  channel already attached under the ID keeps its data.
+
+### <!-- 6 -->Documentation
+
+- Document early create_channel errors ([#2305](https://github.com/Devolutions/IronRDP/issues/2305)) ([93ab7c4091](https://github.com/Devolutions/IronRDP/commit/93ab7c40912a4a6d4251fb1b7a3b47111993c799)) 
+
+  create_channel and create_channel_with return an error before DRDYNVC
+  capability negotiation, but their docs don't say so.
+  
+  Document the error on all three channel-creation methods and point to
+  is_ready.
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.9.0...ironrdp-dvc-v0.10.0)] - 2026-10-27
 
 ### <!-- 1 -->Features
