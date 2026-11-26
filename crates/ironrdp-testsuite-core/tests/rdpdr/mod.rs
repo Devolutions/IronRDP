@@ -515,6 +515,28 @@ fn filesystem_drive_announce_replaces_characters_a_device_name_may_not_contain()
 }
 
 #[test]
+fn announced_drive_name_replaces_characters_a_device_name_may_not_contain() {
+    // The announce tests above reach this rule only through `new_drive`; this pins the public function that callers
+    // such as the FFI duplicate-name check use directly.
+    // oracle: reference FreeRDP/FreeRDP@dae0390a42ab271fa07a35979dfcd5671f83a949:channels/drive/client/drive_main.c -
+    // drive_register_drive_path writes '_' in DeviceData for <, >, ", /, \, | and :; MS-RDPEFS §2.2.1.3 lists the
+    // first six as invalid in PreferredDosName and allows a colon there only at its end.
+    assert_eq!(
+        DeviceAnnounceHeader::announced_drive_name(r#"a<b>c"d/e\f|g:h"#),
+        "a_b_c_d_e_f_g_h"
+    );
+    // oracle: mutant a NUL kept, which ends DeviceData early.
+    assert_eq!(DeviceAnnounceHeader::announced_drive_name("a\0b"), "a_b");
+}
+
+#[test]
+fn announced_drive_name_keeps_a_trailing_colon() {
+    // oracle: mutant the trailing colon replaced with '_', which Windows shows as `\\tsclient\C_` rather than
+    // `\\tsclient\C`.
+    assert_eq!(DeviceAnnounceHeader::announced_drive_name("C:"), "C:");
+}
+
+#[test]
 fn filesystem_drive_announce_keeps_a_trailing_colon() {
     // oracle: mutant the trailing colon replaced with '_', which Windows shows as `\\tsclient\C_` rather than
     // `\\tsclient\C`.
