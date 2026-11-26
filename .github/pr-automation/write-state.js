@@ -485,7 +485,7 @@ async function writeState({
       if (!Number.isSafeInteger(runId) || runId <= 0) {
         throw new Error("a leaseless failure report requires the writer's run ID");
       }
-      for (const run of checks.filter((run) => run.status === "in_progress")) {
+      for (const run of checks.filter((run) => run.status !== "completed")) {
         const lease = parseLeaseMarker(run.output?.summary);
         if (lease && lease.runId !== runId &&
             await ownerIsActive(github, { ...lease, owner, repo })) {

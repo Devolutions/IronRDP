@@ -6876,10 +6876,10 @@ test("a leaseless review failure leaves another live run's claim alone", async (
     app: { slug: "github-actions" },
     output: { summary: leaseMarker({ kind: "review", headSha: SHA, runId: 8, attempt: 1 }) },
   };
-  const write = async (ownerStatus, runId = 7) => {
+  const write = async (ownerStatus, runId = 7, claimStatus = "in_progress") => {
     const mutations = [];
     const github = {
-      paginate: { iterator: async function* () { yield { data: [claim] }; } },
+      paginate: { iterator: async function* () { yield { data: [{ ...claim, status: claimStatus }] }; } },
       rest: {
         checks: {
           listForRef: () => {},
@@ -6915,6 +6915,9 @@ test("a leaseless review failure leaves another live run's claim alone", async (
   const live = await write("in_progress");
   assert.equal(live.result.superseded, true);
   assert.deepEqual(live.mutations, []);
+  const queued = await write("in_progress", 7, "queued");
+  assert.equal(queued.result.superseded, true);
+  assert.deepEqual(queued.mutations, []);
   const finished = await write("completed");
   assert.notEqual(finished.result.superseded, true);
   assert.ok(finished.mutations.some(([kind]) => kind === "update"));

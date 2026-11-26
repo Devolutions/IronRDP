@@ -120,7 +120,6 @@ async function claimAutomaticLease({
       output: { title: "Automation superseded", summary: marker },
     });
   };
-  let reason;
   try {
     // The review recheck reads lease ownership from the listing, so judging it before the listing
     // shows the claim would supersede an unchanged pull request. Nothing else retries admission
@@ -131,10 +130,7 @@ async function claimAutomaticLease({
     })) {
       throw new Error(`lease claim ${claim.id} is not listed; rerun the failed jobs to retry admission`);
     }
-    if (!await eligible(lease)) {
-      // An eligibility change during `create` makes this claim unusable.
-      reason = "pull request changed during lease claim";
-    }
+    if (await eligible(lease)) return { owner: true, available: true, lease };
   } catch (error) {
     // A failed recheck leaves no owner, so the claim must not stay in progress.
     try {
@@ -145,14 +141,9 @@ async function claimAutomaticLease({
     }
     throw error;
   }
-  if (reason) {
-    await supersede();
-    return { owner: false, available: true, reason };
-  }
-  return {
-    owner: true, available: true,
-    lease,
-  };
+  // An eligibility change during `create` makes this claim unusable.
+  await supersede();
+  return { owner: false, available: true, reason: "pull request changed during lease claim" };
 }
 
 async function ownsLatestLease({ github, owner, repo, lease }) {
