@@ -1,6 +1,6 @@
 # IronRDP Session
 
-Abstract state machine to drive an RDP session.
+Abstract state machine to drive an RDP client session.
 
 This crate is part of the [IronRDP] project.
 

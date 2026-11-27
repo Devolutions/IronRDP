@@ -192,7 +192,7 @@ See the connector README for supported operations and interoperability limits.
 
 #### [`crates/ironrdp-session`](./crates/ironrdp-session)
 
-State machines to drive an RDP session.
+State machines to drive an RDP client session.
 
 #### [`crates/ironrdp-input`](./crates/ironrdp-input)
 
