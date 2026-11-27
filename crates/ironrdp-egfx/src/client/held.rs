@@ -113,10 +113,39 @@ pub(super) struct HeldQueue {
     stream_ends: usize,
     /// INVARIANT: the encoded size of the held `Held::Pdu` commands.
     command_bytes: usize,
+    pictures: PictureCharges,
+}
+
+#[derive(Default)]
+struct PictureCharges {
     /// INVARIANT: the bytes of the held pictures already returned.
-    picture_bytes: usize,
+    returned_bytes: usize,
     /// INVARIANT: the held pictures not returned yet.
     pending: usize,
+}
+
+impl PictureCharges {
+    fn hold(&mut self, picture: &HeldPicture) {
+        match &picture.frame {
+            None => self.pending += 1,
+            Some(Ok(frame)) => self.returned_bytes += frame.allocated_bytes(),
+            Some(Err(_)) => {}
+        }
+    }
+
+    fn release(&mut self, picture: &HeldPicture) {
+        match &picture.frame {
+            None => self.pending -= 1,
+            Some(Ok(frame)) => self.returned_bytes -= frame.allocated_bytes(),
+            Some(Err(_)) => {}
+        }
+    }
+
+    fn resolve(&mut self, picture: &mut HeldPicture, frame: DecoderResult<DecodedPicture>) {
+        self.release(picture);
+        picture.frame = Some(frame);
+        self.hold(picture);
+    }
 }
 
 impl HeldQueue {
@@ -125,7 +154,11 @@ impl HeldQueue {
     }
 
     pub(super) fn has_pending(&self) -> bool {
-        0 < self.pending
+        0 < self.pictures.pending
+    }
+
+    pub(super) fn can_release_all(&self) -> bool {
+        !self.is_empty() && !self.has_pending()
     }
 
     pub(super) fn ends_stream_ahead(&self) -> bool {
@@ -136,30 +169,14 @@ impl HeldQueue {
         *self = Self::default();
     }
 
-    fn charge(&mut self, picture: &HeldPicture) {
-        match &picture.frame {
-            None => self.pending += 1,
-            Some(Ok(frame)) => self.picture_bytes += frame.allocated_bytes(),
-            Some(Err(_)) => {}
-        }
+    pub(super) fn push_picture(&mut self, picture: HeldPicture) {
+        self.pictures.hold(&picture);
+        self.commands.push_back(Held::Avc420(picture));
     }
 
-    fn release(&mut self, picture: &HeldPicture) {
-        match &picture.frame {
-            None => self.pending -= 1,
-            Some(Ok(frame)) => self.picture_bytes -= frame.allocated_bytes(),
-            Some(Err(_)) => {}
-        }
-    }
-
-    /// Holds a picture behind the held commands, or ahead of them when `front`.
-    pub(super) fn push_picture(&mut self, picture: HeldPicture, front: bool) {
-        self.charge(&picture);
-        if front {
-            self.commands.push_front(Held::Avc420(picture));
-        } else {
-            self.commands.push_back(Held::Avc420(picture));
-        }
+    pub(super) fn push_picture_front(&mut self, picture: HeldPicture) {
+        self.pictures.hold(&picture);
+        self.commands.push_front(Held::Avc420(picture));
     }
 
     pub(super) fn push_command(&mut self, pdu: GfxPdu) {
@@ -173,7 +190,7 @@ impl HeldQueue {
     pub(super) fn pop_front(&mut self) -> Option<Held> {
         let command = self.commands.pop_front()?;
         match &command {
-            Held::Avc420(picture) => self.release(picture),
+            Held::Avc420(picture) => self.pictures.release(picture),
             Held::Pdu(pdu) => {
                 if ends_stream(pdu) {
                     self.stream_ends -= 1;
@@ -196,13 +213,7 @@ impl HeldQueue {
                 continue;
             }
             match poll(picture.decoder) {
-                Some(frame) => {
-                    self.pending -= 1;
-                    if let Ok(frame) = &frame {
-                        self.picture_bytes += frame.allocated_bytes();
-                    }
-                    picture.frame = Some(frame);
-                }
+                Some(frame) => self.pictures.resolve(picture, frame),
                 None => {
                     exhausted.insert(picture.decoder);
                 }
@@ -215,12 +226,39 @@ impl HeldQueue {
         if let Some(Held::Avc420(picture)) = self.commands.front_mut()
             && picture.frame.is_none()
         {
-            self.pending -= 1;
-            if let Ok(frame) = &frame {
-                self.picture_bytes += frame.allocated_bytes();
-            }
-            picture.frame = Some(frame);
+            self.pictures.resolve(picture, frame);
         }
+    }
+
+    pub(super) fn front_pending_decoder(&self) -> Option<DecoderKey> {
+        match self.commands.front() {
+            Some(Held::Avc420(picture)) if picture.frame.is_none() => Some(picture.decoder),
+            _ => None,
+        }
+    }
+
+    pub(super) fn front_wait_at_head(&mut self, now: MonotonicInstant) -> Duration {
+        let Some(Held::Avc420(picture)) = self.commands.front_mut() else {
+            return Duration::ZERO;
+        };
+        now.duration_since(*picture.waiting_since.get_or_insert(now))
+    }
+
+    pub(super) fn mark_front_flushed(&mut self) -> bool {
+        match self.commands.front_mut() {
+            Some(Held::Avc420(picture)) => !core::mem::replace(&mut picture.flushed, true),
+            _ => false,
+        }
+    }
+
+    pub(super) fn pending_decoders(&self) -> BTreeSet<DecoderKey> {
+        self.commands
+            .iter()
+            .filter_map(|command| match command {
+                Held::Avc420(picture) if picture.frame.is_none() => Some(picture.decoder),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Sets the result of the pending held pictures submitted to a decoder in `decoders`.
@@ -230,8 +268,8 @@ impl HeldQueue {
                 && picture.frame.is_none()
                 && decoders.contains(&picture.decoder)
             {
-                picture.frame = Some(Err(DecoderError::msg(reason.to_owned())));
-                self.pending -= 1;
+                self.pictures
+                    .resolve(picture, Err(DecoderError::msg(reason.to_owned())));
             }
         }
     }
@@ -240,8 +278,8 @@ impl HeldQueue {
     pub(super) fn over_budget(&self) -> bool {
         MAX_HELD_COMMANDS < self.commands.len()
             || MAX_HELD_COMMAND_BYTES < self.command_bytes
-            || MAX_HELD_PICTURE_BYTES < self.picture_bytes
-            || MAX_PENDING_PICTURES < self.pending
+            || MAX_HELD_PICTURE_BYTES < self.pictures.returned_bytes
+            || MAX_PENDING_PICTURES < self.pictures.pending
     }
 }
 

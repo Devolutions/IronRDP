@@ -84,7 +84,7 @@ use crate::cache::{
     SMALL_CACHE_BYTES, SMALL_CACHE_SLOTS,
 };
 use crate::compositor::{Compositor, OutputUpdate};
-use crate::decode::{DecodeStatus, DecodedPicture, DecoderError, DecoderFactory, H264Decoder};
+use crate::decode::{DecodeStatus, DecodedPicture, DecoderError, DecoderFactory, DecoderResult, H264Decoder};
 use crate::pdu::{
     Avc420BitmapStream, Avc444BitmapStream, CacheImportOfferPdu, CacheImportReplyPdu, CacheToSurfacePdu,
     CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags,
@@ -781,15 +781,7 @@ impl GraphicsPipelineClient {
     fn enforce_held_budget(&mut self) {
         if self.held.over_budget() && self.held.has_pending() {
             warn!("Graphics commands held behind H.264 decoding exceed their budget; giving up the pending pictures");
-            let decoders = self
-                .held
-                .commands
-                .iter()
-                .filter_map(|command| match command {
-                    Held::Avc420(picture) if picture.frame.is_none() => Some(picture.decoder),
-                    _ => None,
-                })
-                .collect();
+            let decoders = self.held.pending_decoders();
             self.give_up(
                 &decoders,
                 "graphics commands held behind H.264 decoding exceed their budget",
@@ -810,105 +802,95 @@ impl GraphicsPipelineClient {
 
     /// The decoder a held picture was submitted to.
     fn held_picture_decoder(&mut self, key: DecoderKey) -> Option<&mut Box<dyn H264Decoder>> {
-        match key {
-            DecoderKey::Shared => self.h264_decoder.as_mut(),
-            DecoderKey::Surface(surface_id) => self.surface_h264_decoders.get_mut(&surface_id)?.as_mut(),
-        }
+        decoder_for(&mut self.h264_decoder, &mut self.surface_h264_decoders, key)
     }
 
     /// Paints the held pictures returned so far, in order, and applies the commands held behind them.
     ///
     /// With `now`, a late picture's decoder is flushed, and a picture later still is given up.
     fn release_held(&mut self, now: Option<MonotonicInstant>) -> PduResult<Vec<DvcMessage>> {
-        let mut responses = Vec::new();
         let (shared, surfaces) = (&mut self.h264_decoder, &mut self.surface_h264_decoders);
-        self.held.collect(|key| {
-            let decoder = match key {
-                DecoderKey::Shared => shared.as_mut(),
-                DecoderKey::Surface(surface_id) => surfaces.get_mut(&surface_id).and_then(Option::as_mut),
-            };
-            match decoder {
-                Some(decoder) => decoder.poll_decoded(),
-                None => Some(Err(DecoderError::msg("the decoder of a pending picture is gone"))),
-            }
-        });
+        self.held
+            .collect(|key| poll_returned_picture(decoder_for(shared, surfaces, key)));
         self.enforce_held_budget();
+
+        let mut responses = Vec::new();
         loop {
-            let picture = match self.held.commands.front_mut() {
+            match self.held.commands.front() {
                 None => break,
-                Some(Held::Pdu(_)) => {
-                    let Some(Held::Pdu(pdu)) = self.held.pop_front() else {
-                        break;
-                    };
-                    // An AVC420 picture this submits goes to the front, ahead of the commands after it.
-                    self.releasing = true;
-                    let applied = self.apply_pdu(pdu);
-                    self.releasing = false;
-                    responses.extend(applied?);
-                    continue;
-                }
-                Some(Held::Avc420(picture)) => picture,
-            };
-            if picture.frame.is_none() {
-                let (key, waiting_since, flushed) = (picture.decoder, picture.waiting_since, picture.flushed);
-                let decoder = self.held_picture_decoder(key);
-                let returned = match decoder {
-                    Some(decoder) => decoder.poll_decoded(),
-                    None => Some(Err(DecoderError::msg("the decoder of a pending picture is gone"))),
-                };
-                match returned {
-                    Some(frame) => self.held.resolve_front(frame),
-                    None => {
-                        let Some(now) = now else {
-                            break;
-                        };
-                        let since = waiting_since.unwrap_or(now);
-                        let waited = now.duration_since(since);
-                        if let Some(Held::Avc420(picture)) = self.held.commands.front_mut() {
-                            picture.waiting_since = Some(since);
-                            picture.flushed |= self.decode_timeouts.flush_after <= waited;
-                        }
-                        if self.decode_timeouts.give_up_after <= waited {
-                            warn!(
-                                ?waited,
-                                "An H.264 picture is overdue; dropping it and resetting its decoder"
-                            );
-                            self.give_up(
-                                &BTreeSet::from([key]),
-                                "the H.264 decoder did not return the picture in time",
-                            );
-                            continue;
-                        }
-                        if !flushed && self.decode_timeouts.flush_after <= waited {
-                            if let Some(decoder) = self.held_picture_decoder(key) {
-                                decoder.flush();
-                            }
-                            continue;
-                        }
+                Some(Held::Pdu(_)) => responses.extend(self.apply_front_command()?),
+                Some(Held::Avc420(picture)) if picture.frame.is_some() => self.paint_front_picture(),
+                Some(Held::Avc420(_)) => {
+                    if !self.try_advance_pending_front_picture(now) {
                         break;
                     }
                 }
             }
-            let Some(Held::Avc420(picture)) = self.held.pop_front() else {
-                break;
-            };
-            let result = picture
-                .frame
-                .unwrap_or_else(|| Err(DecoderError::msg("no picture")))
-                .map_err(|e| pdu_other_err!("H.264 decode", source: e))
-                .and_then(|frame| {
-                    self.paint_avc420(
-                        picture.surface_id,
-                        &picture.destination_rectangle,
-                        &picture.region_rectangles,
-                        &frame,
-                    )
-                });
-            if let Err(error) = result {
-                self.drop_update(Codec1Type::Avc420, picture.surface_id, 0, &error);
-            }
         }
         Ok(responses)
+    }
+
+    fn apply_front_command(&mut self) -> PduResult<Vec<DvcMessage>> {
+        let Some(Held::Pdu(pdu)) = self.held.pop_front() else {
+            return Ok(Vec::new());
+        };
+        self.releasing = true;
+        let applied = self.apply_pdu(pdu);
+        self.releasing = false;
+        applied
+    }
+
+    fn paint_front_picture(&mut self) {
+        let Some(Held::Avc420(picture)) = self.held.pop_front() else {
+            return;
+        };
+        let result = picture
+            .frame
+            .unwrap_or_else(|| Err(DecoderError::msg("no picture")))
+            .map_err(|e| pdu_other_err!("H.264 decode", source: e))
+            .and_then(|frame| {
+                self.paint_avc420(
+                    picture.surface_id,
+                    &picture.destination_rectangle,
+                    &picture.region_rectangles,
+                    &frame,
+                )
+            });
+        if let Err(error) = result {
+            self.drop_update(Codec1Type::Avc420, picture.surface_id, 0, &error);
+        }
+    }
+
+    fn try_advance_pending_front_picture(&mut self, now: Option<MonotonicInstant>) -> bool {
+        let Some(key) = self.held.front_pending_decoder() else {
+            return true;
+        };
+        if let Some(frame) = poll_returned_picture(self.held_picture_decoder(key)) {
+            self.held.resolve_front(frame);
+            return true;
+        }
+        let Some(now) = now else {
+            return false;
+        };
+        let waited = self.held.front_wait_at_head(now);
+        if self.decode_timeouts.give_up_after <= waited {
+            warn!(
+                ?waited,
+                "An H.264 picture is overdue; dropping it and resetting its decoder"
+            );
+            self.give_up(
+                &BTreeSet::from([key]),
+                "the H.264 decoder did not return the picture in time",
+            );
+            return true;
+        }
+        if self.decode_timeouts.flush_after <= waited && self.held.mark_front_flushed() {
+            if let Some(decoder) = self.held_picture_decoder(key) {
+                decoder.flush();
+            }
+            return true;
+        }
+        false
     }
 
     // ========================================================================
@@ -936,7 +918,7 @@ impl GraphicsPipelineClient {
         for pdu in pdus {
             let pdu_responses = self.handle_pdu(pdu)?;
             responses.extend(pdu_responses);
-            if !self.held.is_empty() && !self.held.has_pending() {
+            if self.held.can_release_all() {
                 responses.extend(self.release_held(None)?);
             }
         }
@@ -1547,8 +1529,7 @@ impl GraphicsPipelineClient {
     fn decode_avc420(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc420BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
-        // While releasing held commands, this picture is the oldest; otherwise it comes after them.
-        let held_ahead = !self.releasing && !self.held.is_empty();
+        let behind_held_commands = !self.releasing && !self.held.is_empty();
 
         let Some(decoder) = self.surface_h264_decoder(surface_id)? else {
             debug!("No H.264 decoder configured, skipping AVC420 frame");
@@ -1566,8 +1547,8 @@ impl GraphicsPipelineClient {
         }
         .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
 
-        let frame = match status {
-            DecodeStatus::Ready(frame) if !held_ahead => {
+        let returned = match status {
+            DecodeStatus::Ready(frame) if !behind_held_commands => {
                 return self.paint_avc420(surface_id, dest_rect, &stream.rectangles, &frame);
             }
             DecodeStatus::Ready(frame) => Some(Ok(frame)),
@@ -1578,8 +1559,12 @@ impl GraphicsPipelineClient {
         } else {
             DecoderKey::Shared
         };
-        let picture = HeldPicture::new(surface_id, key, dest_rect.clone(), stream.rectangles, frame);
-        self.held.push_picture(picture, self.releasing);
+        let picture = HeldPicture::new(surface_id, key, dest_rect.clone(), stream.rectangles, returned);
+        if self.releasing {
+            self.held.push_picture_front(picture);
+        } else {
+            self.held.push_picture(picture);
+        }
         self.enforce_held_budget();
         Ok(())
     }
@@ -2444,6 +2429,24 @@ fn convert_uncompressed_to_rgba(src: &[u8]) -> Vec<u8> {
         dst.extend_from_slice(&[r, g, b, 0xFF]);
     }
     dst
+}
+
+fn decoder_for<'a>(
+    shared: &'a mut Option<Box<dyn H264Decoder>>,
+    surfaces: &'a mut BTreeMap<u16, Option<Box<dyn H264Decoder>>>,
+    key: DecoderKey,
+) -> Option<&'a mut Box<dyn H264Decoder>> {
+    match key {
+        DecoderKey::Shared => shared.as_mut(),
+        DecoderKey::Surface(surface_id) => surfaces.get_mut(&surface_id)?.as_mut(),
+    }
+}
+
+fn poll_returned_picture(decoder: Option<&mut Box<dyn H264Decoder>>) -> Option<DecoderResult<DecodedPicture>> {
+    match decoder {
+        Some(decoder) => decoder.poll_decoded(),
+        None => Some(Err(DecoderError::msg("the decoder of a pending picture is gone"))),
+    }
 }
 
 /// Crop a decoded RGBA frame to target dimensions
@@ -3947,7 +3950,7 @@ mod tests {
     }
 
     impl H264Decoder for CoordinateDecoder {
-        fn decode(&mut self, _data: &[u8]) -> crate::decode::DecoderResult<crate::decode::DecodedFrame> {
+        fn decode(&mut self, _data: &[u8]) -> DecoderResult<crate::decode::DecodedFrame> {
             let (w, h) = (self.width, self.height);
             let mut data = Vec::with_capacity(usize::try_from(w * h * 4).unwrap_or(0));
             for y in 0..h {

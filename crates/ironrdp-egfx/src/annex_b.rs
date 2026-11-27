@@ -10,7 +10,7 @@
 //! [ITU-T H.264]: https://www.itu.int/rec/T-REC-H.264
 
 use core::fmt::Write as _;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// `nal_unit_type` of a coded slice of a non-IDR picture.
 const NAL_SLICE: u8 = 1;
@@ -32,6 +32,18 @@ const MAX_SIDE_IN_MBS: u32 = 1024;
 /// The `profile_idc` values whose sequence parameter set carries `chroma_format_idc`, the bit depths
 /// and the scaling matrices, in the order of the condition in the SPS syntax (7.3.2.1.1).
 const PROFILES_WITH_CHROMA_INFO: [u8; 13] = [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135];
+
+const START_CODE: [u8; 4] = [0, 0, 0, 1];
+const SPS_BYTES_BEFORE_ID: usize = 3;
+const MAX_SLICE_TYPE: u32 = 9;
+const MACROBLOCK_SIZE: u32 = 16;
+
+const CHROMA_MONOCHROME: u32 = 0;
+const CHROMA_420: u32 = 1;
+const CHROMA_422: u32 = 2;
+const CHROMA_444: u32 = 3;
+
+const SCALING_LISTS_4X4: usize = 6;
 
 /// The NAL units of an Annex B byte stream, each from its header byte, without start codes.
 ///
@@ -101,12 +113,12 @@ fn leading_codes<const N: usize>(unit: &[u8], skip_bytes: usize) -> Option<[u32;
 
 /// `seq_parameter_set_id` of a sequence parameter set.
 fn sps_id(unit: &[u8]) -> Option<u8> {
-    let [id] = leading_codes::<1>(unit, 3)?;
+    let [id] = leading_codes::<1>(unit, SPS_BYTES_BEFORE_ID)?;
     u8::try_from(id).ok().filter(|_| id <= MAX_SPS_ID)
 }
 
 /// `pic_parameter_set_id` and `seq_parameter_set_id` of a picture parameter set.
-fn pps_ids(unit: &[u8]) -> Option<(u8, u8)> {
+fn pps_and_sps_ids(unit: &[u8]) -> Option<(u8, u8)> {
     let [pps, sps] = leading_codes::<2>(unit, 0)?;
     if !(pps <= MAX_PPS_ID && sps <= MAX_SPS_ID) {
         return None;
@@ -117,7 +129,7 @@ fn pps_ids(unit: &[u8]) -> Option<(u8, u8)> {
 /// `pic_parameter_set_id` of a slice, after `first_mb_in_slice` and `slice_type`.
 fn slice_pps_id(unit: &[u8]) -> Option<u8> {
     let [_, slice_type, pps] = leading_codes::<3>(unit, 0)?;
-    if !(slice_type <= 9 && pps <= MAX_PPS_ID) {
+    if !(slice_type <= MAX_SLICE_TYPE && pps <= MAX_PPS_ID) {
         return None;
     }
     u8::try_from(pps).ok()
@@ -163,7 +175,7 @@ impl<'a> AccessUnit<'a> {
                     }
                     _ => unit.malformed = true,
                 },
-                Some(NAL_PPS) => match pps_ids(nal) {
+                Some(NAL_PPS) => match pps_and_sps_ids(nal) {
                     Some((id, _)) if nal.len() <= MAX_PARAMETER_SET_BYTES => {
                         unit.pps.insert(id, nal);
                     }
@@ -228,46 +240,65 @@ impl ParameterSets {
         if !unit.is_idr() || unit.slice_pps.is_empty() {
             return None;
         }
-        let mut referenced: Vec<u8> = unit.slice_pps.clone();
-        referenced.sort_unstable();
-        referenced.dedup();
-        let mut sps_id = None;
-        for &pps_id in &referenced {
-            let pps = unit
-                .pps
-                .get(&pps_id)
-                .copied()
-                .or_else(|| self.pps.get(&pps_id).map(Vec::as_slice))?;
-            let (_, refers_to) = pps_ids(pps)?;
-            if *sps_id.get_or_insert(refers_to) != refers_to {
-                return None;
-            }
-        }
-        let sps_id = sps_id?;
-        let sps_unit = unit
-            .sps
-            .get(&sps_id)
-            .copied()
-            .or_else(|| self.sps.get(&sps_id).map(Vec::as_slice))?;
+        let pps_ids: BTreeSet<u8> = unit.slice_pps.iter().copied().collect();
+        let sps_id = self.single_sps_id(&unit, &pps_ids)?;
+        let sps_unit = self.sps_unit(&unit, sps_id)?;
         let sps = SequenceParameterSet::parse(sps_unit)?;
 
-        let mut prefix: Vec<&[u8]> = Vec::new();
+        let mut missing_sets = Vec::new();
         if !unit.sps.contains_key(&sps_id) {
-            prefix.push(sps_unit);
+            missing_sets.push(sps_unit);
         }
-        for pps_id in referenced {
+        for pps_id in pps_ids {
             if !unit.pps.contains_key(&pps_id) {
-                prefix.push(self.pps.get(&pps_id)?);
+                missing_sets.push(self.pps.get(&pps_id)?.as_slice());
             }
         }
-        let mut key = Vec::with_capacity(data.len() + prefix.iter().map(|set| set.len() + 4).sum::<usize>());
-        for set in prefix {
-            key.extend_from_slice(&[0, 0, 0, 1]);
-            key.extend_from_slice(set);
-        }
-        key.extend_from_slice(data);
-        Some(KeyAccessUnit { data: key, sps })
+        Some(KeyAccessUnit {
+            data: prepend_nal_units(&missing_sets, data),
+            sps,
+        })
     }
+
+    fn sps_unit<'a>(&'a self, unit: &AccessUnit<'a>, id: u8) -> Option<&'a [u8]> {
+        unit.sps
+            .get(&id)
+            .copied()
+            .or_else(|| self.sps.get(&id).map(Vec::as_slice))
+    }
+
+    fn pps_unit<'a>(&'a self, unit: &AccessUnit<'a>, id: u8) -> Option<&'a [u8]> {
+        unit.pps
+            .get(&id)
+            .copied()
+            .or_else(|| self.pps.get(&id).map(Vec::as_slice))
+    }
+
+    fn single_sps_id(&self, unit: &AccessUnit<'_>, pps_ids: &BTreeSet<u8>) -> Option<u8> {
+        let sps_ids = pps_ids
+            .iter()
+            .map(|&pps_id| {
+                let (_, sps_id) = pps_and_sps_ids(self.pps_unit(unit, pps_id)?)?;
+                Some(sps_id)
+            })
+            .collect::<Option<BTreeSet<u8>>>()?;
+        let mut sps_ids = sps_ids.into_iter();
+        match (sps_ids.next(), sps_ids.next()) {
+            (Some(sps_id), None) => Some(sps_id),
+            _ => None,
+        }
+    }
+}
+
+fn prepend_nal_units(units: &[&[u8]], data: &[u8]) -> Vec<u8> {
+    let prefix_len: usize = units.iter().map(|unit| START_CODE.len() + unit.len()).sum();
+    let mut joined = Vec::with_capacity(prefix_len + data.len());
+    for unit in units {
+        joined.extend_from_slice(&START_CODE);
+        joined.extend_from_slice(unit);
+    }
+    joined.extend_from_slice(data);
+    joined
 }
 
 /// The fields of a sequence parameter set a decoder is configured from.
@@ -302,20 +333,20 @@ impl SequenceParameterSet {
         let constraint_flags = bits.byte()?;
         let level_idc = bits.byte()?;
         bits.at_most(MAX_SPS_ID)?; // seq_parameter_set_id
-        let mut chroma_format_idc = 1;
+        let mut chroma_format_idc = CHROMA_420;
         if PROFILES_WITH_CHROMA_INFO.contains(&profile_idc) {
-            chroma_format_idc = bits.at_most(3)?;
-            if chroma_format_idc == 3 {
+            chroma_format_idc = bits.at_most(CHROMA_444)?;
+            if chroma_format_idc == CHROMA_444 {
                 bits.bit()?; // separate_colour_plane_flag
             }
             bits.at_most(6)?; // bit_depth_luma_minus8
             bits.at_most(6)?; // bit_depth_chroma_minus8
             bits.bit()?; // qpprime_y_zero_transform_bypass_flag
             if bits.bit()? {
-                let lists = if chroma_format_idc == 3 { 12 } else { 8 };
-                for list in 0..lists {
+                let scaling_lists_8x8 = if chroma_format_idc == CHROMA_444 { 6 } else { 2 };
+                for list in 0..SCALING_LISTS_4X4 + scaling_lists_8x8 {
                     if bits.bit()? {
-                        skip_scaling_list(&mut bits, if list < 6 { 16 } else { 64 })?;
+                        skip_scaling_list(&mut bits, if list < SCALING_LISTS_4X4 { 4 * 4 } else { 8 * 8 })?;
                     }
                 }
             }
@@ -344,25 +375,26 @@ impl SequenceParameterSet {
             bits.bit()?; // mb_adaptive_frame_field_flag
         }
         bits.bit()?; // direct_8x8_inference_flag
-        let (mut left, mut right, mut top, mut bottom) = (0, 0, 0, 0);
+        let (mut crop_left, mut crop_right, mut crop_top, mut crop_bottom) = (0, 0, 0, 0);
         if bits.bit()? {
-            left = bits.exp_golomb()?;
-            right = bits.exp_golomb()?;
-            top = bits.exp_golomb()?;
-            bottom = bits.exp_golomb()?;
+            crop_left = bits.exp_golomb()?;
+            crop_right = bits.exp_golomb()?;
+            crop_top = bits.exp_golomb()?;
+            crop_bottom = bits.exp_golomb()?;
         }
         let full_range = video_full_range(&mut bits);
         // 7.4.2.1.1, frame_crop_left_offset: CropUnitX and CropUnitY by ChromaArrayType.
         let field_factor: u32 = if frame_mbs_only { 1 } else { 2 };
-        let (crop_x, crop_y): (u32, u32) = match chroma_format_idc {
-            0 => (1, field_factor),
-            1 => (2, 2 * field_factor),
-            2 => (2, field_factor),
+        let (crop_unit_x, crop_unit_y): (u32, u32) = match chroma_format_idc {
+            CHROMA_MONOCHROME => (1, field_factor),
+            CHROMA_420 => (2, 2 * field_factor),
+            CHROMA_422 => (2, field_factor),
             _ => (1, field_factor),
         };
-        let width = (width_in_mbs * 16).checked_sub(crop_x.checked_mul(left.checked_add(right)?)?)?;
-        let height =
-            (height_in_map_units * 16 * field_factor).checked_sub(crop_y.checked_mul(top.checked_add(bottom)?)?)?;
+        let cropped_width = crop_unit_x.checked_mul(crop_left.checked_add(crop_right)?)?;
+        let cropped_height = crop_unit_y.checked_mul(crop_top.checked_add(crop_bottom)?)?;
+        let width = (width_in_mbs * MACROBLOCK_SIZE).checked_sub(cropped_width)?;
+        let height = (height_in_map_units * MACROBLOCK_SIZE * field_factor).checked_sub(cropped_height)?;
         if width == 0 || height == 0 {
             return None;
         }
