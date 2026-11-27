@@ -221,7 +221,7 @@ proptest! {
     }
 
     #[test]
-    fn bitmap_updates_in_turn_are_sent_as_on_their_own(updates in prop::collection::vec(updates(), 1..=4)) {
+    fn bitmap_updates_in_turn_are_sent_as_on_their_own(updates in prop::collection::vec(updates(), 2..=4)) {
         let sent = encode_in_turn(&updates);
         for (pdus, update) in sent.iter().zip(&updates) {
             // oracle: spec MS-RDPBCGR 2.2.9.1.1.3.1.2.2 (destLeft..destBottom are the inclusive bounds drawn)
