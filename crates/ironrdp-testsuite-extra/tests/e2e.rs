@@ -1312,7 +1312,7 @@ impl RdpServerDisplay for FailingDisplay {
 // oracle: regression #2384
 #[tokio::test]
 async fn a_disconnect_tells_a_client_without_error_info_that_the_server_ended_the_session() {
-    let reasons = Box::pin(run_disconnect_probe(false, false)).await;
+    let reasons = Box::pin(run_disconnect_probe(false, SessionEnd::Disconnect, false)).await;
     assert!(
         matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
         "{reasons:?}"
@@ -1324,7 +1324,7 @@ async fn a_disconnect_tells_a_client_without_error_info_that_the_server_ended_th
 // oracle: spec MS-RDPBCGR §1.3.1.4.3
 #[tokio::test]
 async fn a_disconnect_tells_an_error_info_client_the_reason_before_the_ultimatum() {
-    let reasons = Box::pin(run_disconnect_probe(true, false)).await;
+    let reasons = Box::pin(run_disconnect_probe(true, SessionEnd::Disconnect, false)).await;
     assert_reason_then_ultimatum(&reasons, DISCONNECT_REASON);
 }
 
@@ -1336,7 +1336,7 @@ async fn a_disconnect_tells_an_error_info_client_the_reason_before_the_ultimatum
 // oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/transport.c
 #[tokio::test]
 async fn a_client_still_sending_when_the_server_disconnects_it_gets_the_reason_and_the_ultimatum() {
-    let reasons = Box::pin(run_disconnect_probe(true, true)).await;
+    let reasons = Box::pin(run_disconnect_probe(true, SessionEnd::Disconnect, true)).await;
     assert_reason_then_ultimatum(&reasons, DISCONNECT_REASON);
 }
 
@@ -1434,15 +1434,86 @@ async fn a_client_still_sending_on_a_plain_connection_gets_the_reason_and_the_ul
     assert_reason_then_ultimatum(&reasons, DISCONNECT_REASON);
 }
 
+/// A client that didn't set `RNS_UD_CS_SUPPORT_ERRINFO_PDU` and whose reconnect the server refuses learns from the
+/// Disconnect Provider Ultimatum that the server ended the connection, instead of finding it closed.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+// oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/rdp.c
+#[rstest::rstest]
+#[case::unknown_cookie(SessionEnd::RefusedReconnect)]
+#[case::connection_binder(SessionEnd::ReconnectWithConnectionBinder)]
+#[tokio::test]
+async fn a_refused_reconnect_tells_a_client_without_error_info_that_the_server_ended_the_connection(
+    #[case] end: SessionEnd,
+) {
+    let reasons = Box::pin(run_disconnect_probe(false, end, false)).await;
+    assert!(
+        matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
+        "{reasons:?}"
+    );
+}
+
+/// A client that set `RNS_UD_CS_SUPPORT_ERRINFO_PDU` and whose reconnect the server refuses gets the reason, then the
+/// Disconnect Provider Ultimatum.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+// oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/rdp.c
+#[rstest::rstest]
+#[case::unknown_cookie(SessionEnd::RefusedReconnect)]
+#[case::connection_binder(SessionEnd::ReconnectWithConnectionBinder)]
+#[tokio::test]
+async fn a_refused_reconnect_tells_an_error_info_client_the_reason_before_the_ultimatum(#[case] end: SessionEnd) {
+    let reasons = Box::pin(run_disconnect_probe(true, end, false)).await;
+    // oracle: spec MS-RDPBCGR §3.3.5.7.1.1
+    assert_reason_then_ultimatum(
+        &reasons,
+        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges),
+    );
+}
+
+/// A client that set `RNS_UD_CS_SUPPORT_ERRINFO_PDU`, whose reconnect the server refuses, and that is still sending
+/// input gets the reason and the ultimatum too.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+// oracle: mutant closing the connection as soon as the last PDU is written
+// oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/transport.c
+#[rstest::rstest]
+#[case::unknown_cookie(SessionEnd::RefusedReconnect)]
+#[case::connection_binder(SessionEnd::ReconnectWithConnectionBinder)]
+#[tokio::test]
+async fn a_refused_reconnect_still_reaches_a_client_that_keeps_sending(#[case] end: SessionEnd) {
+    let reasons = Box::pin(run_disconnect_probe(true, end, true)).await;
+    // oracle: spec MS-RDPBCGR §3.3.5.7.1.1
+    assert_reason_then_ultimatum(
+        &reasons,
+        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges),
+    );
+}
+
 const DISCONNECT_REASON: ErrorInfo =
     ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::RpcInitiatedDisconnectByuser);
 
-/// Connects a client that sets `RNS_UD_CS_SUPPORT_ERRINFO_PDU` when `error_info` is true, ends the session with
-/// `ServerEvent::Disconnect(DISCONNECT_REASON)`, and returns every reason the client got for the end, in order.
+/// How [`run_disconnect_probe`] ends the session.
+#[derive(Clone, Copy, Debug)]
+enum SessionEnd {
+    /// `ServerEvent::Disconnect(DISCONNECT_REASON)` once the client is connected.
+    Disconnect,
+    /// The client presents an auto-reconnect cookie the server doesn't hold, and the credential validator rejects its
+    /// logon, so the server refuses the reconnect whether it refuses the cookie or falls back to the Client Info
+    /// credentials.
+    RefusedReconnect,
+    /// The client presents the auto-reconnect cookie the server holds, but the server has a connection binder, and it
+    /// refuses an auto-reconnect it can't restore to a credential-bound connection before any binding.
+    ReconnectWithConnectionBinder,
+}
+
+/// Connects a client that sets `RNS_UD_CS_SUPPORT_ERRINFO_PDU` when `error_info` is true, ends the session as `end`
+/// says, and returns every reason the client got for the end, in order.
 ///
 /// With `client_keeps_sending`, the client sends input while the server ends the session, before it reads anything,
 /// as [`keep_sending`] describes.
-async fn run_disconnect_probe(error_info: bool, client_keeps_sending: bool) -> Vec<session::GracefulDisconnectReason> {
+async fn run_disconnect_probe(
+    error_info: bool,
+    end: SessionEnd,
+    client_keeps_sending: bool,
+) -> Vec<session::GracefulDisconnectReason> {
     let identity = test_tls_identity();
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let mut server = RdpServer::builder()
@@ -1462,6 +1533,17 @@ async fn run_disconnect_probe(error_info: bool, client_keeps_sending: bool) -> V
     if client_keeps_sending {
         server.set_close_timeout_for_test(UNHURRIED_CLOSE);
     }
+    match end {
+        SessionEnd::Disconnect => {}
+        SessionEnd::RefusedReconnect => {
+            server.set_auto_reconnect_cookie(Some(HELD_COOKIE));
+            server.set_credential_validator(Some(Arc::new(RejectingValidator)));
+        }
+        SessionEnd::ReconnectWithConnectionBinder => {
+            server.set_auto_reconnect_cookie(Some(HELD_COOKIE));
+            server.set_connection_binder(Some(Arc::new(RejectingBinder)));
+        }
+    }
     let ev = server.event_sender().clone();
     let opted_out = Arc::new(AtomicBool::new(false));
 
@@ -1474,7 +1556,17 @@ async fn run_disconnect_probe(error_info: bool, client_keeps_sending: bool) -> V
             });
 
             let server_addr = local_addr_of(&ev).await;
-            let make_connector = |client_addr| connector::ClientConnector::new(default_client_config(), client_addr);
+            let make_connector = |client_addr| {
+                let connector = connector::ClientConnector::new(default_client_config(), client_addr);
+                match end {
+                    SessionEnd::Disconnect => connector,
+                    SessionEnd::RefusedReconnect => connector.with_auto_reconnect_cookie(ServerAutoReconnect {
+                        logon_id: 1,
+                        random_bits: [0x66; 16],
+                    }),
+                    SessionEnd::ReconnectWithConnectionBinder => connector.with_auto_reconnect_cookie(HELD_COOKIE),
+                }
+            };
             let (mut framed, connection_result) =
                 connect_client_with(server_addr, make_connector, |stream| ErrorInfoOptOut {
                     inner: stream,
@@ -1496,7 +1588,9 @@ async fn run_disconnect_probe(error_info: bool, client_keeps_sending: bool) -> V
             .build();
             let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
-            ev.send(ServerEvent::Disconnect(DISCONNECT_REASON)).unwrap();
+            if matches!(end, SessionEnd::Disconnect) {
+                ev.send(ServerEvent::Disconnect(DISCONNECT_REASON)).unwrap();
+            }
             if client_keeps_sending {
                 keep_sending(&mut framed)
                     .await
@@ -1520,6 +1614,26 @@ async fn run_disconnect_probe(error_info: bool, client_keeps_sending: bool) -> V
         "the client's RNS_UD_CS_SUPPORT_ERRINFO_PDU was not cleared"
     );
     reasons
+}
+
+/// The auto-reconnect cookie the server in [`run_disconnect_probe`] holds for a reconnect.
+const HELD_COOKIE: ServerAutoReconnect = ServerAutoReconnect {
+    logon_id: 1,
+    random_bits: [0x5a; 16],
+};
+
+/// Binds no connection; the refusals in [`run_disconnect_probe`] happen before any binding.
+struct RejectingBinder;
+
+#[async_trait::async_trait]
+impl server::ConnectionBinder for RejectingBinder {
+    async fn bind_connection(
+        &self,
+        _credentials: &server::Credentials,
+        _desktop_size: DesktopSize,
+    ) -> ServerResult<server::BoundConnection> {
+        Err(server::ServerError::reason("test binder", "no session to bind"))
+    }
 }
 
 /// Clears `RNS_UD_CS_SUPPORT_ERRINFO_PDU` in the client's MCS Connect Initial before TLS encrypts it, when `enabled`.

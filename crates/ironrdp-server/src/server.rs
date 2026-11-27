@@ -7477,6 +7477,16 @@ fn with_connection_handler<R>(
     handler.map(|h| f(h.borrow_mut().as_mut()))
 }
 
+/// Refuses the client: The access-denied Set Error Info PDU for a client that opted into it ([MS-RDPBCGR 3.3.5.7.1.1]
+/// User Authorization Failures), then the MCS Disconnect Provider Ultimatum, as for a server-side disconnection
+/// ([MS-RDPBCGR 1.3.1.4.3] Administrator-Initiated on Server).
+///
+/// A client without error-info support gets only the ultimatum, which tells it that the server ended the connection on
+/// purpose.
+/// FreeRDP takes a connection that closes without it for a network failure and reconnects into the same refusal.
+///
+/// [MS-RDPBCGR 3.3.5.7.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/26043070-85f8-4ee8-8721-d7f013c755ca
+/// [MS-RDPBCGR 1.3.1.4.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/43ad66ef-67ac-4034-ad70-8fda54eb5115
 async fn send_access_denied(acceptor: &Acceptor, writer: &mut impl FramedWrite) -> ServerResult<()> {
     let mut buf = WriteBuf::new();
     let written = acceptor
@@ -7488,6 +7498,7 @@ async fn send_access_denied(acceptor: &Acceptor, writer: &mut impl FramedWrite) 
             .await
             .map_err(|e| ServerError::io("write access denied", e))?;
     }
+    send_disconnect_ultimatum(writer).await;
     Ok(())
 }
 
