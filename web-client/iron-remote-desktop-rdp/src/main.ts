@@ -143,6 +143,15 @@ export function legacyGraphics(enable: boolean): Extension {
 }
 
 /**
+ * Offer H.264 (AVC420) on the graphics pipeline, decoded by the browser's WebCodecs `VideoDecoder`.
+ * It is offered only when `VideoDecoder.isConfigSupported` accepts Constrained Baseline H.264, and never with
+ * `legacyGraphics`.
+ */
+export function gfxH264(enable: boolean): Extension {
+    return new Extension('gfx_h264', enable);
+}
+
+/**
  * The `performanceFlags` of the Extended Info Packet (MS-RDPBCGR 2.2.1.11.1.1.1), such as
  * 0x1 to leave out the wallpaper or 0x20 to leave out the cursor shadow on a slow link.
  * Without it the client sends DISABLE_FULLWINDOWDRAG, DISABLE_MENUANIMATIONS and ENABLE_FONT_SMOOTHING.
