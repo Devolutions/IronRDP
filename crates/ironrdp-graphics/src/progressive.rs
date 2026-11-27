@@ -1250,6 +1250,42 @@ fn charge_region_clipping_work(used: &mut usize, units: usize) -> Result<(), Pro
     }
 }
 
+/// Finds the run of a clipping region's rectangles that a rectangle can intersect.
+///
+/// `Region::intersect_rectangle` scans the rectangles from the first one until one starts below the rectangle.
+/// The rectangles before the first one whose bottom reaches the rectangle's top intersect nothing, so only the run between the two needs scanning.
+/// The run is found with binary searches over running maxima, which need no ordering of the rectangles themselves.
+struct ClippingRows {
+    /// For each rectangle, the greatest top edge of it and the rectangles before it.
+    max_top: Vec<u16>,
+    /// For each rectangle, the greatest bottom edge of it and the rectangles before it.
+    max_bottom: Vec<u16>,
+}
+
+impl ClippingRows {
+    fn new(rectangles: &[InclusiveRectangle]) -> Self {
+        return Self {
+            max_top: running_max(rectangles.iter().map(|r| r.top)),
+            max_bottom: running_max(rectangles.iter().map(|r| r.bottom)),
+        };
+
+        fn running_max(edges: impl Iterator<Item = u16>) -> Vec<u16> {
+            edges
+                .scan(0, |max, edge| {
+                    *max = edge.max(*max);
+                    Some(*max)
+                })
+                .collect()
+        }
+    }
+
+    fn run(&self, rectangle: &InclusiveRectangle) -> core::ops::Range<usize> {
+        let start = self.max_bottom.partition_point(|&bottom| bottom < rectangle.top);
+        let end = self.max_top.partition_point(|&top| top <= rectangle.bottom);
+        start..end.max(start)
+    }
+}
+
 /// High-level progressive bitmap decoder for EGFX WireToSurface2 processing.
 ///
 /// Maintains progressive tile state and sub-band references per surface across
@@ -1431,23 +1467,27 @@ impl ProgressiveDecoder {
             // within the same frame, including one sent under another codec context,
             // so clip them against every tile this surface has received in the frame
             // rather than only the newly decoded tiles.
+            charge_region_clipping_work(&mut region_clipping_work, clipping_region.rectangles.len())?;
+            let clipping_rows = ClippingRows::new(&clipping_region.rectangles);
             for &(x_idx, y_idx) in frame_tiles.iter() {
-                charge_region_clipping_work(&mut region_clipping_work, clipping_region.rectangles.len().max(1))?;
                 let left = x_idx.saturating_mul(TILE_DIM);
                 let top = y_idx.saturating_mul(TILE_DIM);
                 let right = left.saturating_add(TILE_DIM).min(surface_width);
                 let bottom = top.saturating_add(TILE_DIM).min(surface_height);
                 if left >= right || top >= bottom {
+                    charge_region_clipping_work(&mut region_clipping_work, 1)?;
                     continue;
                 }
 
-                let update_rectangles = clipping_region
-                    .intersect_rectangle(&InclusiveRectangle {
-                        left,
-                        top,
-                        right: right - 1,
-                        bottom: bottom - 1,
-                    })
+                let tile_rectangle = InclusiveRectangle {
+                    left,
+                    top,
+                    right: right - 1,
+                    bottom: bottom - 1,
+                };
+                let run = clipping_rows.run(&tile_rectangle);
+                charge_region_clipping_work(&mut region_clipping_work, run.len().max(1))?;
+                let update_rectangles = Region::intersect_rectangles(&clipping_region.rectangles[run], &tile_rectangle)
                     .rectangles
                     .into_iter()
                     .map(|rectangle| ExclusiveRectangle {
@@ -2225,39 +2265,39 @@ mod tests {
         ironrdp_pdu::codecs::rfx::RfxRectangle { x, y, width, height }
     }
 
-    #[test]
-    fn decoder_bounds_region_clipping_work() {
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
+    /// A progressive stream with one REGION of the given rectangles and no tiles.
+    fn stream_with_rects(rects: Vec<ironrdp_pdu::codecs::rfx::RfxRectangle>) -> Vec<u8> {
         use ironrdp_pdu::codecs::rfx::progressive::{
             ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
             ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
         };
 
-        fn stream_with_rects(rects: Vec<RfxRectangle>) -> Vec<u8> {
-            encode_progressive_stream(&[
-                ProgressiveBlock::Sync(ProgressiveSyncPdu),
-                ProgressiveBlock::Context(ProgressiveContextPdu {
-                    context_id: 0,
-                    tile_size: 0x0040,
-                    flags: 0,
-                }),
-                ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
-                    frame_index: 0,
-                    region_count: 1,
-                }),
-                ProgressiveBlock::Region(ProgressiveRegion {
-                    tile_size: 0x40,
-                    rects,
-                    quant_vals: vec![],
-                    quant_prog_vals: vec![],
-                    flags: 0,
-                    tiles: vec![],
-                }),
-                ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
-            ])
-            .unwrap()
-        }
+        encode_progressive_stream(&[
+            ProgressiveBlock::Sync(ProgressiveSyncPdu),
+            ProgressiveBlock::Context(ProgressiveContextPdu {
+                context_id: 0,
+                tile_size: 0x0040,
+                flags: 0,
+            }),
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 0,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(ProgressiveRegion {
+                tile_size: 0x40,
+                rects,
+                quant_vals: vec![],
+                quant_prog_vals: vec![],
+                flags: 0,
+                tiles: vec![],
+            }),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ])
+        .unwrap()
+    }
 
+    #[test]
+    fn decoder_bounds_region_clipping_work() {
         // Each disjoint rectangle grows the normalized Region by one entry.
         // 1,500 such inserts exceed the aggregate scan budget long before the
         // wire-format u16 rectangle count could drive quadratic work unchecked.
@@ -2281,7 +2321,8 @@ mod tests {
 
         // Intersecting a moderately fragmented region with an attacker-sized
         // accumulated tile set is charged to the same per-payload budget.
-        let rects = (0..100u16).map(|x| rect(x.saturating_mul(3), 0, 2, 2)).collect();
+        // The rectangles span every row, so each tile is intersected with all of them.
+        let rects = (0..100u16).map(|x| rect(x.saturating_mul(3), 0, 2, 8192)).collect();
         let frame_tiles = (0..11_000u16).map(|index| (index % 128, index / 128)).collect();
         let mut decoder = ProgressiveDecoder::new();
         decoder.begin_frame();
@@ -2291,6 +2332,57 @@ mod tests {
             Ok(_) => panic!("tile intersections must share the clipping work budget"),
         };
         assert!(error.to_string().contains("clipping work limit exceeded"));
+    }
+
+    // oracle: regression #2547
+    #[test]
+    fn decoder_clips_frame_tiles_against_the_rectangles_of_their_rows() {
+        // A REGION spread over a 4400x2600 surface, as Windows sends it while a video plays:
+        // 18 disjoint rectangles in each of the 41 tile rows.
+        let rects = (0..41u16)
+            .flat_map(|row| (0..18u16).map(move |column| rect(column * 240, row * 64, 16, 16)))
+            .collect();
+        // Tiles received from earlier payloads of the same frame.
+        let frame_tiles = (0..1542u16).map(|index| (index % 69, index / 69)).collect();
+        let mut decoder = ProgressiveDecoder::new();
+        decoder.begin_frame();
+        decoder.frame_tiles.insert(1, frame_tiles);
+
+        let result = decoder.decode_bitmap(1, 1, 4400, 2600, &stream_with_rects(rects));
+
+        if let Err(error) = result {
+            panic!("a REGION spread over the surface must be clipped within the work budget: {error}");
+        }
+    }
+
+    proptest::proptest! {
+        // oracle: reference Region::intersect_rectangle over all the rectangles of the region
+        #[test]
+        fn clipping_against_the_run_matches_the_whole_region(
+            rects in proptest::collection::vec((0u16..500, 0u16..500, 0u16..80, 0u16..80), 1..60),
+            (left, top, width, height) in (0u16..600, 0u16..600, 0u16..100, 0u16..100),
+        ) {
+            let mut region = Region::new();
+            for (left, top, width, height) in rects {
+                region.union_rectangle(InclusiveRectangle {
+                    left,
+                    top,
+                    right: left + width,
+                    bottom: top + height,
+                });
+            }
+            let rectangle = InclusiveRectangle {
+                left,
+                top,
+                right: left + width,
+                bottom: top + height,
+            };
+
+            let run = ClippingRows::new(&region.rectangles).run(&rectangle);
+            let clipped = Region::intersect_rectangles(&region.rectangles[run], &rectangle);
+
+            proptest::prop_assert_eq!(clipped.rectangles, region.intersect_rectangle(&rectangle).rectangles);
+        }
     }
 
     #[test]
