@@ -111,7 +111,10 @@ fn neg_failure_on_protocol_mismatch() {
 
 /// An acceptor told to offer the graphics pipeline advertises it in the RDP Negotiation Response.
 ///
-/// MS-RDPBCGR 2.2.1.2.1: `DYNVC_GFX_PROTOCOL_SUPPORTED` means the server supports the Graphics Pipeline Extension.
+/// MS-RDPBCGR [2.2.1.2.1] RDP Negotiation Response (RDP_NEG_RSP): `DYNVC_GFX_PROTOCOL_SUPPORTED` means the server
+/// supports the Graphics Pipeline Extension.
+///
+/// [2.2.1.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b2975bdc-6d56-49ee-9c57-f2ff3a0b6817
 #[test]
 fn negotiation_response_advertises_the_graphics_pipeline_when_offered() {
     let mut acceptor = tls_acceptor();
@@ -124,6 +127,7 @@ fn negotiation_response_advertises_the_graphics_pipeline_when_offered() {
 }
 
 /// An acceptor that wasn't told to offer the graphics pipeline doesn't claim to support it.
+// oracle: spec MS-RDPBCGR §2.2.1.2.1 (the flag claims support for the Graphics Pipeline Extension)
 // oracle: mutant the acceptor advertising the graphics pipeline by default
 #[test]
 fn negotiation_response_does_not_advertise_the_graphics_pipeline_by_default() {
@@ -132,15 +136,7 @@ fn negotiation_response_does_not_advertise_the_graphics_pipeline_by_default() {
 }
 
 fn tls_acceptor() -> Acceptor {
-    Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    )
+    Acceptor::new(SecurityProtocol::SSL, DESKTOP_SIZE, Vec::new(), None)
 }
 
 /// Feed `acceptor` a Connection Request for TLS and return the flags of the RDP Negotiation Response it sends.

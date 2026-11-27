@@ -362,9 +362,8 @@ async fn negotiation_response_flags_idle_and_during_a_session(
 
 /// Send `server_addr` a Connection Request for TLS and return the flags of the RDP Negotiation Response.
 async fn negotiation_response_flags(server_addr: SocketAddr) -> pdu::nego::ResponseFlags {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-    let mut stream = TcpStream::connect(server_addr).await.expect("connect to the server");
+    let stream = TcpStream::connect(server_addr).await.expect("connect to the server");
+    let mut framed = ironrdp_tokio::TokioFramed::new(stream);
     let request = pdu::nego::ConnectionRequest {
         nego_data: None,
         flags: pdu::nego::RequestFlags::empty(),
@@ -372,10 +371,9 @@ async fn negotiation_response_flags(server_addr: SocketAddr) -> pdu::nego::Respo
         correlation_info: None,
     };
     let request = encode_vec(&X224(request)).expect("encode connection request");
-    stream.write_all(&request).await.expect("send connection request");
-    let mut confirm = [0u8; 128];
-    let read = stream.read(&mut confirm).await.expect("read connection confirm");
-    let confirm = decode::<X224<pdu::nego::ConnectionConfirm>>(&confirm[..read])
+    framed.write_all(&request).await.expect("send connection request");
+    let (_, confirm) = framed.read_pdu().await.expect("read connection confirm");
+    let confirm = decode::<X224<pdu::nego::ConnectionConfirm>>(&confirm)
         .expect("decode connection confirm")
         .0;
     let response = match confirm {
