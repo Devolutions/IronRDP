@@ -819,10 +819,11 @@ pub enum ConnectionPolicy {
     /// Candidates are additionally gated through
     /// [`ConnectionHandler::on_accept`] *before* they are allowed to
     /// negotiate, so an IP allowlist or rate limiter bounds who may even
-    /// attempt a takeover. It does NOT bound how long one admitted candidate
-    /// can occupy the (single) negotiation slot before another is even
-    /// considered -- see the limitation documented on
-    /// `CANDIDATE_NEGOTIATION_TIMEOUT`.
+    /// attempt a takeover. Up to eight admitted candidates negotiate at once,
+    /// each for at most `CANDIDATE_NEGOTIATION_TIMEOUT`, so a candidate that
+    /// stalls its handshake holds one of those slots, not the server; while all
+    /// are taken, newcomers wait in the listen backlog (see
+    /// `MAX_CONCURRENT_CANDIDATES`).
     Preempt,
 }
 
@@ -1957,20 +1958,39 @@ impl ServerEvent {
     }
 }
 
-/// The in-flight [`negotiate_candidate`] call for a candidate connection, or a
-/// never-resolving placeholder while none is being negotiated. Borrows the
+/// The in-flight [`negotiate_candidate`] call for one candidate connection,
+/// held in the race's pool of up to `MAX_CONCURRENT_CANDIDATES`. Borrows the
 /// [`NegotiationContext`] the race built.
 type PreemptProbe<'ctx, S> = core::pin::Pin<Box<dyn Future<Output = Option<AuthenticatedConnection<S>>> + 'ctx>>;
 
 /// What resolved first while a session was live, under
 /// [`ConnectionPolicy::Preempt`]: the session itself ending, a
-/// new inbound connection, or the verdict on a [`PreemptProbe`] being
-/// negotiated. The race's `select!` yields one of these and must not
-/// otherwise mutate the probe slot, whose futures it still borrows.
+/// new inbound connection, or the verdict on one of the [`PreemptProbe`]s
+/// being negotiated (by its index in the pool). The race's `select!` yields
+/// one of these and must not otherwise mutate the pool, whose futures it
+/// still borrows.
 enum PreemptRace<S> {
     Ended(ServerResult<()>),
     Accepted(std::io::Result<Option<IncomingConnection<S>>>),
-    Probed(Option<AuthenticatedConnection<S>>),
+    Probed(usize, Option<AuthenticatedConnection<S>>),
+}
+
+/// The first probe in `probes` to finish, with its index. It stays pending
+/// while none has finished.
+///
+/// INVARIANT: pending forever on an empty pool; callers gate on it being
+/// non-empty.
+fn next_probe<'a, S>(
+    probes: &'a mut [PreemptProbe<'_, S>],
+) -> impl Future<Output = (usize, Option<AuthenticatedConnection<S>>)> + 'a {
+    core::future::poll_fn(move |cx| {
+        for (index, probe) in probes.iter_mut().enumerate() {
+            if let core::task::Poll::Ready(candidate) = probe.as_mut().poll(cx) {
+                return core::task::Poll::Ready((index, candidate));
+            }
+        }
+        core::task::Poll::Pending
+    })
 }
 
 /// How long a redirected client has to close the connection before the server closes it.
@@ -3359,38 +3379,57 @@ const FINAL_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// This bound is load-bearing, not a tidiness measure: `negotiate_candidate`
 /// blocks on socket reads, so without it a peer that completes the TCP
-/// handshake and then sends NOTHING parks the probe forever — which stalls
-/// accepts for the rest of the session (the accept arm is gated on `!probing`)
-/// and, once the live session ends, hangs the whole accept loop on the handoff
-/// await with no way left to observe [`ServerEvent::Quit`]. Generous enough for
+/// handshake and then sends NOTHING parks the probe forever — which holds a
+/// pool slot for the rest of the session (the accept arm closes once
+/// [`MAX_CONCURRENT_CANDIDATES`] are in flight) and, once the live session
+/// ends, hangs the whole accept loop on the handoff await with no way left to
+/// observe [`ServerEvent::Quit`]. Generous enough for
 /// TLS + CredSSP over a slow link, which is sub-second on a healthy one.
 ///
-/// # Known limitation: one candidate is negotiated at a time
-///
-/// `run()`'s race holds a SINGLE probe slot (`probe`/`probing`), so a peer
-/// that has already cleared [`ConnectionHandler::on_accept`] and then merely
-/// STALLS its handshake (a well-formed X.224 Connection Request, then
-/// silence before TLS — `on_accept` cannot see this in advance, since it
-/// already returned `true` for this peer) occupies the slot for up to this
-/// whole timeout, during which the accept arm is gated off and no OTHER
-/// candidate — including a legitimate one — can even begin negotiating. The
-/// live session itself is unaffected either way (this only withholds
-/// PREEMPTION, never breaks it), and it is not a regression against master's
-/// queue-behind default. But it means `on_accept` bounds who may ATTEMPT a
-/// takeover, not how long one attempt can hold up every other. Closing this
-/// properly needs a small pool of concurrent probe slots rather than one;
-/// not done here.
+/// Up to [`MAX_CONCURRENT_CANDIDATES`] candidates negotiate at once, so a
+/// candidate that stalls its handshake holds one slot for this long, not the
+/// whole server.
 const CANDIDATE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long the accept loop will wait, AFTER the live session has ended, for a
-/// candidate that is still mid-negotiation.
+/// How many candidates `run()`'s race negotiates at once under
+/// [`ConnectionPolicy::Preempt`].
+///
+/// With a single slot, a peer that cleared [`ConnectionHandler::on_accept`]
+/// and then stalled its handshake (silence after the TCP handshake, or a
+/// well-formed X.224 Connection Request and then nothing before TLS) kept
+/// every other newcomer in the listen backlog for up to
+/// [`CANDIDATE_NEGOTIATION_TIMEOUT`]; a handful of silent sockets, reopened as
+/// they timed out, kept the server from negotiating anyone, a legitimate
+/// client included. The same applied with no session live, since the first
+/// newcomer is then the connection being served and the next one the only
+/// candidate.
+///
+/// With a pool, stalling the server takes this many stalled handshakes at
+/// once, each paying a TCP handshake and getting through `on_accept`, which is
+/// where a per-address limit belongs (a rate limiter, an allowlist). When the
+/// pool is full, newcomers wait in the listen backlog until a slot frees.
+/// Each slot costs a pending handshake's buffers.
+///
+/// The pool bounds what one stalled handshake costs; it doesn't stop a peer
+/// that keeps eight open from filling it. Limiting that per address is the
+/// embedder's job, in `on_accept`. A connection with no peer address never
+/// reaches `on_accept`, so an embedder serving such a transport needs its own
+/// limit in front of the server.
+const MAX_CONCURRENT_CANDIDATES: usize = 8;
+
+/// How long the accept loop will wait, AFTER the live session has ended, for
+/// one of the candidates still mid-negotiation to authenticate.
+///
+/// One budget for the whole pool, not per candidate: the first candidate to
+/// authenticate within it is served next, a candidate that fails doesn't end
+/// the wait, and every candidate still negotiating when one wins, or when the
+/// budget runs out, is dropped (it can reconnect).
 ///
 /// Deliberately short and separate from [`CANDIDATE_NEGOTIATION_TIMEOUT`]:
 /// while this wait is in progress the loop is servicing nothing — no accepts,
 /// no [`ServerEvent`]s, not even [`ServerEvent::Quit`] — so it is the window in
-/// which an unauthenticated peer can make the server look hung. A candidate
-/// that cannot finish within it is dropped and simply reconnects; holding the
-/// whole listener for it is the worse trade.
+/// which an unauthenticated peer can make the server look hung; holding the
+/// whole listener for a slow candidate is the worse trade.
 const CANDIDATE_HANDOFF_GRACE: Duration = Duration::from_millis(750);
 
 /// How long a just-evicted peer is barred from preempting its way back in —
@@ -5027,16 +5066,21 @@ impl RdpServer {
                         }
                         NextConnection::Authenticated(winner) => Box::pin(self.serve_negotiated(winner.connection)),
                     };
-                    let mut probe: PreemptProbe<'_, C::Stream> = Box::pin(core::future::pending());
-                    let mut probing = false;
+                    // INVARIANT: a probe is removed from `probes` as soon as it
+                    // resolves, so a finished future is never polled again.
+                    let mut probes: Vec<PreemptProbe<'_, C::Stream>> = Vec::new();
 
                     loop {
                         // This `select!` must only YIELD — never mutate
-                        // `probe`, whose futures it still borrows.
+                        // `probes`, whose futures it still borrows.
+                        let room = probes.len() < MAX_CONCURRENT_CANDIDATES;
+                        let probing = !probes.is_empty();
                         let race = tokio::select! {
                             res = &mut conn => PreemptRace::Ended(res),
-                            accepted = source.accept(), if !probing && source_open => PreemptRace::Accepted(accepted),
-                            candidate = &mut probe => PreemptRace::Probed(candidate),
+                            accepted = source.accept(), if room && source_open => PreemptRace::Accepted(accepted),
+                            (index, candidate) = next_probe(&mut probes), if probing => {
+                                PreemptRace::Probed(index, candidate)
+                            }
                         };
 
                         match race {
@@ -5046,22 +5090,34 @@ impl RdpServer {
                             // as the old session ended; finish it and serve it
                             // next if it authenticates.
                             PreemptRace::Ended(res) => {
-                                if probing {
-                                    // BOUNDED: nothing else is being serviced
-                                    // during this await, so a candidate that
-                                    // is not nearly done is dropped rather
-                                    // than allowed to stall the listener.
-                                    handoff = match tokio::time::timeout(CANDIDATE_HANDOFF_GRACE, &mut probe).await {
-                                        Ok(candidate) => candidate,
-                                        Err(_) => {
-                                            debug!(
-                                                "a candidate was still negotiating when the session ended -- \
-                                             dropping it rather than stalling the accept loop; it can reconnect"
-                                            );
-                                            None
+                                // BOUNDED: nothing else is being serviced
+                                // during this await, so candidates that
+                                // are not nearly done are dropped rather
+                                // than allowed to stall the listener. The
+                                // first to authenticate is served next; an
+                                // empty pool resolves at once with none.
+                                let first_winner = async {
+                                    while !probes.is_empty() {
+                                        let (index, candidate) = next_probe(&mut probes).await;
+                                        // Upholds the pool's INVARIANT. The removed probe is a
+                                        // `#[must_use]` future, hence the explicit drop.
+                                        drop(probes.swap_remove(index));
+                                        if candidate.is_some() {
+                                            return candidate;
                                         }
-                                    };
-                                }
+                                    }
+                                    None
+                                };
+                                handoff = match tokio::time::timeout(CANDIDATE_HANDOFF_GRACE, first_winner).await {
+                                    Ok(candidate) => candidate,
+                                    Err(_) => {
+                                        debug!(
+                                            "a candidate was still negotiating when the session ended -- \
+                                         dropping it rather than stalling the accept loop; it can reconnect"
+                                        );
+                                        None
+                                    }
+                                };
                                 break (res, None, recently_evicted);
                             }
                             PreemptRace::Accepted(Ok(Some(next))) => {
@@ -5093,11 +5149,10 @@ impl RdpServer {
                                     });
 
                                 if candidate_accepted {
-                                    probing = true;
                                     // BOUNDED: see `CANDIDATE_NEGOTIATION_TIMEOUT`.
                                     // An unbounded probe is a remote hang of
                                     // the whole accept loop.
-                                    probe = Box::pin(negotiate_candidate_bounded(&ctx, next));
+                                    probes.push(Box::pin(negotiate_candidate_bounded(&ctx, next)));
                                 } else if bounced_back {
                                     info!(
                                         ?next_peer,
@@ -5115,9 +5170,10 @@ impl RdpServer {
                             PreemptRace::Accepted(Err(error)) => {
                                 warn!(%error, "accept failed while a session was live");
                             }
-                            PreemptRace::Probed(candidate) => {
-                                probing = false;
-                                probe = Box::pin(core::future::pending());
+                            PreemptRace::Probed(index, candidate) => {
+                                // Upholds the pool's INVARIANT. The removed probe is a
+                                // `#[must_use]` future, hence the explicit drop.
+                                drop(probes.swap_remove(index));
                                 // `negotiate_candidate` already logged the
                                 // reason when it declines, so there is nothing
                                 // to do in the `None` case.
@@ -8283,27 +8339,7 @@ mod preempt_tests {
         let local = task::LocalSet::new();
         local
             .run_until(async move {
-                let mut server = RdpServer::builder()
-                    .with_addr((Ipv4Addr::LOCALHOST, 0))
-                    .with_no_security()
-                    .with_no_input()
-                    .with_no_display()
-                    .with_connection_policy(ConnectionPolicy::Preempt)
-                    .build();
-
-                let event_sender = server.event_sender().clone();
-                let run_task = task::spawn_local(async move {
-                    let _ = Box::pin(server.run()).await;
-                });
-
-                let addr = loop {
-                    let (tx, rx) = oneshot::channel();
-                    let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
-                    if let Ok(Some(addr)) = rx.await {
-                        break addr;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                };
+                let (addr, event_sender, run_task) = spawn_preempt_server().await;
 
                 // Client A: the live session (connect, stay silent).
                 let client_a = TcpStream::connect(addr).await.unwrap();
@@ -8318,6 +8354,8 @@ mod preempt_tests {
                 // bare `probe.await` and never come back.
                 drop(client_a);
 
+                // oracle: mutant an unbounded await on a candidate when the
+                // session ends wedges the accept loop: neither check passes.
                 // The server must still be answering its event channel. With
                 // the unbounded await this never resolves.
                 let responsive = tokio::time::timeout(Duration::from_secs(3), async {
@@ -8344,6 +8382,208 @@ mod preempt_tests {
                 assert!(
                     stopped.is_ok(),
                     "the server ignored Quit -- the accept loop was wedged by an unauthenticated silent peer"
+                );
+            })
+            .await;
+    }
+
+    /// A `Preempt` server with no security, running on a local task (call
+    /// inside a `LocalSet`): its address, its event sender and the task.
+    async fn spawn_preempt_server() -> (SocketAddr, mpsc::UnboundedSender<ServerEvent>, task::JoinHandle<()>) {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .with_connection_policy(ConnectionPolicy::Preempt)
+            .build();
+        let event_sender = server.event_sender().clone();
+        let run_task = task::spawn_local(async move {
+            let _ = Box::pin(server.run()).await;
+        });
+        let addr = loop {
+            let (tx, rx) = oneshot::channel();
+            let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
+            if let Ok(Some(addr)) = rx.await {
+                break addr;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        (addr, event_sender, run_task)
+    }
+
+    /// Sends an X.224 Connection Request for standard RDP security, the
+    /// protocol `RdpServerSecurity::None` accepts.
+    async fn send_connection_request(stream: &mut TcpStream) {
+        let cr = nego::ConnectionRequest {
+            nego_data: None,
+            flags: nego::RequestFlags::empty(),
+            protocol: nego::SecurityProtocol::empty(),
+            correlation_info: None,
+        };
+        stream.write_all(&encode_vec(&X224(cr)).unwrap()).await.unwrap();
+    }
+
+    /// Whether `stream` gets an X.224 Connection Confirm carrying an RDP
+    /// Negotiation Response within `wait`.
+    async fn negotiated(stream: &mut TcpStream, wait: Duration) -> bool {
+        // oracle: spec MS-RDPBCGR §2.2.1.2 and §2.2.1.2.1: a Connection Confirm
+        // with a negotiation response is a TPKT header, an X.224 Connection
+        // Confirm and an RDP_NEG_RSP, whose type byte is 0x02 (an
+        // RDP_NEG_FAILURE is 0x03).
+        const TPKT_HEADER: usize = 4;
+        const X224_CONNECTION_CONFIRM: usize = 7;
+        const RDP_NEG_RSP: usize = 8;
+        const CONFIRM: usize = TPKT_HEADER + X224_CONNECTION_CONFIRM + RDP_NEG_RSP;
+        const TYPE_RDP_NEG_RSP: u8 = 0x02;
+        let mut confirm = [0u8; CONFIRM];
+        match tokio::time::timeout(wait, stream.read_exact(&mut confirm)).await {
+            Ok(Ok(_)) => {}
+            _ => return false,
+        }
+        // TPKT: version 3, reserved, then the frame's big-endian length.
+        let tpkt_length = u8::try_from(CONFIRM).unwrap();
+        assert_eq!(
+            confirm[..TPKT_HEADER],
+            [0x03, 0x00, 0x00, tpkt_length],
+            "not a {CONFIRM}-byte TPKT frame: {confirm:02x?}"
+        );
+        assert_eq!(
+            confirm[TPKT_HEADER + X224_CONNECTION_CONFIRM],
+            TYPE_RDP_NEG_RSP,
+            "not an RDP_NEG_RSP: {confirm:02x?}"
+        );
+        true
+    }
+
+    /// Under `Preempt`, a candidate that stalls its handshake must not stop
+    /// another newcomer from being negotiated (see `MAX_CONCURRENT_CANDIDATES`).
+    #[tokio::test]
+    async fn a_stalled_candidate_does_not_block_other_candidates() {
+        let local = task::LocalSet::new();
+        local
+            .run_until(async move {
+                let (addr, event_sender, run_task) = spawn_preempt_server().await;
+
+                // A holds the connection being served, B a candidate slot;
+                // both connect and then say nothing.
+                let client_a = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let client_b = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                // C negotiates while B is still stalled.
+                // oracle: mutant a pool of one (`MAX_CONCURRENT_CANDIDATES = 1`)
+                // leaves C in the backlog behind B.
+                let mut client_c = TcpStream::connect(addr).await.unwrap();
+                send_connection_request(&mut client_c).await;
+                assert!(
+                    negotiated(&mut client_c, Duration::from_secs(3)).await,
+                    "a newcomer was not negotiated while another candidate was stalled"
+                );
+
+                // A connection mid-handshake isn't interrupted by Quit, so end
+                // the clients' connections first.
+                drop((client_a, client_b, client_c));
+                let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(3), run_task).await.is_ok(),
+                    "the server ignored Quit"
+                );
+            })
+            .await;
+    }
+
+    /// The pool is bounded: while `MAX_CONCURRENT_CANDIDATES` candidates are
+    /// negotiating, a newcomer waits in the listen backlog, and is negotiated
+    /// as soon as one of them ends.
+    #[tokio::test]
+    async fn a_full_pool_holds_newcomers_until_a_slot_frees() {
+        let local = task::LocalSet::new();
+        local
+            .run_until(async move {
+                let (addr, event_sender, run_task) = spawn_preempt_server().await;
+
+                let client_a = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let mut stalled = Vec::new();
+                for _ in 0..MAX_CONCURRENT_CANDIDATES {
+                    stalled.push(TcpStream::connect(addr).await.unwrap());
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+
+                let mut newcomer = TcpStream::connect(addr).await.unwrap();
+                send_connection_request(&mut newcomer).await;
+                // oracle: mutant an unbounded pool (no `room` gate on accept)
+                // negotiates the newcomer at once.
+                assert!(
+                    !negotiated(&mut newcomer, Duration::from_millis(500)).await,
+                    "a newcomer was negotiated with the pool full"
+                );
+
+                // One stalled candidate gives up; its slot takes the newcomer.
+                drop(stalled.pop());
+                assert!(
+                    negotiated(&mut newcomer, Duration::from_secs(3)).await,
+                    "the newcomer was not negotiated once a slot freed"
+                );
+
+                // A connection mid-handshake isn't interrupted by Quit, so end
+                // the clients' connections first.
+                drop((client_a, stalled, newcomer));
+                let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(3), run_task).await.is_ok(),
+                    "the server ignored Quit"
+                );
+            })
+            .await;
+    }
+
+    /// When the session ends while candidates are negotiating, the first one
+    /// to *authenticate* within `CANDIDATE_HANDOFF_GRACE` is served next. One
+    /// that fails first (here: disconnects) must not end the wait and take
+    /// the others down with it.
+    #[tokio::test]
+    async fn a_failed_candidate_does_not_cost_another_the_handoff() {
+        let local = task::LocalSet::new();
+        local
+            .run_until(async move {
+                let (addr, event_sender, run_task) = spawn_preempt_server().await;
+
+                // A is served; B and C are candidates, all silent so far.
+                let client_a = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let client_b = TcpStream::connect(addr).await.unwrap();
+                let mut client_c = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                // The session ends, then B gives up, then C negotiates, all
+                // well within the 750 ms handoff grace (the short sleeps only
+                // order the three events).
+                drop(client_a);
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                drop(client_b);
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                send_connection_request(&mut client_c).await;
+
+                // C gets its Connection Confirm and stays connected; had its
+                // probe been dropped, the read would end at EOF instead.
+                // oracle: mutants dropping the candidates when the session ends,
+                // or ending the wait on the first candidate to finish (B), fail
+                // here.
+                assert!(
+                    negotiated(&mut client_c, Duration::from_secs(3)).await,
+                    "the candidate that authenticated was dropped at the handoff"
+                );
+
+                // A connection mid-handshake isn't interrupted by Quit, so end
+                // the clients' connections first.
+                drop(client_c);
+                let _ = event_sender.send(ServerEvent::Quit("test over".to_owned()));
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(3), run_task).await.is_ok(),
+                    "the server ignored Quit"
                 );
             })
             .await;
