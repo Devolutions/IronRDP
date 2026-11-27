@@ -3487,6 +3487,9 @@ struct NegotiationContext {
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     requires_authenticated_credentials: bool,
+    /// Whether a graphics pipeline factory is configured, so the RDP Negotiation Response advertises the pipeline.
+    #[cfg(feature = "egfx")]
+    offers_graphics_pipeline: bool,
 }
 
 /// Negotiate and authenticate a candidate connection against a cloned `ctx`,
@@ -3530,6 +3533,10 @@ where
         },
     );
     pending.acceptor.set_credssp_backend(ctx.credssp_backend);
+    #[cfg(feature = "egfx")]
+    pending
+        .acceptor
+        .set_graphics_pipeline_offer(ctx.offers_graphics_pipeline);
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
     // sound / gfx backends means running user-supplied factories for a peer
@@ -4419,6 +4426,8 @@ impl RdpServer {
             display: Arc::clone(&self.display),
             credential_validator: self.credential_validator.clone(),
             requires_authenticated_credentials: self.connection_binder.is_some(),
+            #[cfg(feature = "egfx")]
+            offers_graphics_pipeline: self.gfx_factory.is_some(),
         }
     }
 
@@ -4651,6 +4660,10 @@ impl RdpServer {
             },
         );
         pending.acceptor.set_credssp_backend(self.credssp_backend);
+        // The response that advertises the graphics pipeline goes out before any channel is attached, so only the
+        // factory configured here can be known at that point, not a pipeline a `DynamicChannelFactory` adds.
+        #[cfg(feature = "egfx")]
+        pending.acceptor.set_graphics_pipeline_offer(self.gfx_factory.is_some());
         pending
     }
 
@@ -7978,6 +7991,8 @@ mod preempt_tests {
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),
             credential_validator: None,
             requires_authenticated_credentials: false,
+            #[cfg(feature = "egfx")]
+            offers_graphics_pipeline: false,
         }
     }
 

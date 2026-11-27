@@ -285,6 +285,112 @@ async fn test_client_server_advertising_dyn_vc_gfx_protocol() {
     .await
 }
 
+/// A server with a graphics pipeline factory advertises the pipeline in its RDP Negotiation Response, also to a
+/// connection that negotiates while a session is live.
+///
+/// [MS-RDPBCGR] 2.2.1.2.1 RDP Negotiation Response (RDP_NEG_RSP): `DYNVC_GFX_PROTOCOL_SUPPORTED` means the server
+/// supports the Graphics Pipeline Extension.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b2975bdc-6d56-49ee-9c57-f2ff3a0b6817
+// oracle: spec MS-RDPBCGR §2.2.1.2.1 (the server supports the Graphics Pipeline Extension)
+// oracle: reference FreeRDP/FreeRDP@65c0333c8191:libfreerdp/core/nego.c (set when the server supports the pipeline)
+#[tokio::test]
+async fn a_server_with_a_graphics_pipeline_advertises_it_when_negotiating() {
+    let (idle, during_a_session) = negotiation_response_flags_idle_and_during_a_session(true).await;
+    assert!(idle.contains(pdu::nego::ResponseFlags::DYNVC_GFX_PROTOCOL_SUPPORTED));
+    assert!(during_a_session.contains(pdu::nego::ResponseFlags::DYNVC_GFX_PROTOCOL_SUPPORTED));
+}
+
+/// A server without a graphics pipeline factory doesn't claim to support the pipeline.
+// oracle: spec MS-RDPBCGR §2.2.1.2.1 (the flag claims support for the Graphics Pipeline Extension)
+#[tokio::test]
+async fn a_server_without_a_graphics_pipeline_does_not_advertise_one() {
+    let (idle, during_a_session) = negotiation_response_flags_idle_and_during_a_session(false).await;
+    assert!(!idle.contains(pdu::nego::ResponseFlags::DYNVC_GFX_PROTOCOL_SUPPORTED));
+    assert!(!during_a_session.contains(pdu::nego::ResponseFlags::DYNVC_GFX_PROTOCOL_SUPPORTED));
+}
+
+/// The flags of the RDP Negotiation Response a `Preempt` server sends to a connection while it's idle, and to one that
+/// arrives during a session and so negotiates alongside it.
+async fn negotiation_response_flags_idle_and_during_a_session(
+    with_graphics_pipeline: bool,
+) -> (pdu::nego::ResponseFlags, pdu::nego::ResponseFlags) {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (caps_tx, _caps_rx) = mpsc::unbounded_channel();
+    let gfx_factory: Option<Box<dyn GfxServerFactory>> = if with_graphics_pipeline {
+        Some(Box::new(TestGfxFactory { caps_tx }))
+    } else {
+        None
+    };
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .with_gfx_factory(gfx_factory)
+        .with_connection_policy(server::ConnectionPolicy::Preempt)
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    let test = Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+        let server_addr = local_addr_of(&ev).await;
+
+        let idle = negotiation_response_flags(server_addr).await;
+        let (session, _) = connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+        let during_a_session = negotiation_response_flags(server_addr).await;
+
+        drop(session);
+        server_task.abort();
+        (idle, during_a_session)
+    }));
+    tokio::time::timeout(Duration::from_secs(20), test)
+        .await
+        .expect("both negotiations must finish")
+}
+
+/// Send `server_addr` a Connection Request for TLS and return the flags of the RDP Negotiation Response.
+async fn negotiation_response_flags(server_addr: SocketAddr) -> pdu::nego::ResponseFlags {
+    let stream = TcpStream::connect(server_addr).await.expect("connect to the server");
+    let mut framed = ironrdp_tokio::TokioFramed::new(stream);
+    let request = pdu::nego::ConnectionRequest {
+        nego_data: None,
+        flags: pdu::nego::RequestFlags::empty(),
+        protocol: pdu::nego::SecurityProtocol::SSL,
+        correlation_info: None,
+    };
+    let request = encode_vec(&X224(request)).expect("encode connection request");
+    framed.write_all(&request).await.expect("send connection request");
+    let (_, confirm) = framed.read_pdu().await.expect("read connection confirm");
+    let confirm = decode::<X224<pdu::nego::ConnectionConfirm>>(&confirm)
+        .expect("decode connection confirm")
+        .0;
+    let response = match confirm {
+        pdu::nego::ConnectionConfirm::Response { flags, .. } => Ok(flags),
+        pdu::nego::ConnectionConfirm::Failure { code } => Err(code),
+    };
+    response.expect("the server must accept the negotiation")
+}
+
 /// The server sizes fast-path updates by the client's Multifragment Update Capability Set.
 ///
 /// [MS-RDPBCGR] 2.2.7.2.6: MaxRequestSize is the size of the client's reassembly buffer, so no

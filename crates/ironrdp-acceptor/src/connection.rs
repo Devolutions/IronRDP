@@ -158,6 +158,9 @@ pub struct Acceptor {
     allow_unverified_credentials: bool,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
+    /// Whether the RDP Negotiation Response advertises the Graphics Pipeline Extension.
+    /// See `set_graphics_pipeline_offer()`.
+    offer_graphics_pipeline: bool,
     /// UDP multitransport flags to advertise to the client and, if it
     /// reciprocates, to offer. `None` disables the feature entirely: no
     /// Server MultiTransportChannelData block is sent, and no Initiate
@@ -508,6 +511,7 @@ impl Acceptor {
             allow_unverified_credentials: false,
             reactivation: false,
             honor_client_desktop_size: None,
+            offer_graphics_pipeline: false,
             offer_multitransport: None,
             advertised_multitransport: None,
             sent_multitransport_request: None,
@@ -575,6 +579,21 @@ impl Acceptor {
     /// Allows ClientInfo credentials to be validated by an external logon provider.
     pub fn set_allow_unverified_credentials(&mut self, allow: bool) {
         self.allow_unverified_credentials = allow;
+    }
+
+    /// Advertise the [MS-RDPEGFX] Graphics Pipeline Extension by setting `DYNVC_GFX_PROTOCOL_SUPPORTED` in the
+    /// [\[MS-RDPBCGR\] 2.2.1.2.1] RDP Negotiation Response (RDP_NEG_RSP).
+    ///
+    /// This only advertises the extension.
+    /// The caller still has to register the graphics pipeline's dynamic virtual channel.
+    /// Only a call made before the response is sent takes effect.
+    ///
+    /// `false` is the default.
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    /// [\[MS-RDPBCGR\] 2.2.1.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b2975bdc-6d56-49ee-9c57-f2ff3a0b6817
+    pub fn set_graphics_pipeline_offer(&mut self, offered: bool) {
+        self.offer_graphics_pipeline = offered;
     }
 
     /// Advertise UDP multitransport support (MS-RDPBCGR 2.2.1.4.6) and offer
@@ -769,6 +788,7 @@ impl Acceptor {
             allow_unverified_credentials: consumed.allow_unverified_credentials,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
+            offer_graphics_pipeline: consumed.offer_graphics_pipeline,
             offer_multitransport: consumed.offer_multitransport,
             advertised_multitransport: consumed.advertised_multitransport,
             sent_multitransport_request: consumed.sent_multitransport_request,
@@ -1258,10 +1278,11 @@ impl Sequence for Acceptor {
                         requested_protocol,
                     ));
                 };
-                let connection_confirm = nego::ConnectionConfirm::Response {
-                    flags: nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED,
-                    protocol,
-                };
+                let mut flags = nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED;
+                if self.offer_graphics_pipeline {
+                    flags |= nego::ResponseFlags::DYNVC_GFX_PROTOCOL_SUPPORTED;
+                }
+                let connection_confirm = nego::ConnectionConfirm::Response { flags, protocol };
 
                 debug!(message = ?connection_confirm, "Send");
 
