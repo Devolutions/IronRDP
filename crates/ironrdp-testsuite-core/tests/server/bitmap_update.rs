@@ -185,6 +185,16 @@ fn bitmap_update_after_a_larger_one_is_sent_as_on_its_own() {
     assert_eq!(sent[1], encode(small));
 }
 
+#[test]
+fn bitmap_update_larger_once_encoded_than_twice_its_pixels_draws_exactly() {
+    // A one-pixel update's encoding is longer than the buffer first sized for it, twice its 4 bytes of pixels.
+    let update = bitmap(0, 0, 1, 1);
+    let pdus = encode(update.clone());
+    // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.2 (destLeft..destBottom are the inclusive bounds drawn)
+    // oracle: property round-trip (RDP 6.0 planar bitmaps without color loss decode to the pixels encoded)
+    assert_draws_exactly(&pdus, &update);
+}
+
 /// An offset from 0 to `max`, with both ends as likely as any value in between.
 fn offset(max: u16) -> impl Strategy<Value = u16> {
     prop_oneof![Just(0), Just(max), 0..=max]

@@ -813,7 +813,6 @@ trait BitmapUpdateHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter>;
 }
 
-#[derive(Clone)]
 struct BitmapHandler {
     bitmap: BitmapEncoder,
     buffer: Vec<u8>,
