@@ -1469,6 +1469,24 @@ async fn a_refused_reconnect_tells_an_error_info_client_the_reason_before_the_ul
     );
 }
 
+/// A client that set `RNS_UD_CS_SUPPORT_ERRINFO_PDU`, whose reconnect the server refuses, and that is still sending
+/// input gets the reason and the ultimatum too.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+// oracle: mutant closing the connection as soon as the last PDU is written
+// oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/transport.c
+#[rstest::rstest]
+#[case::unknown_cookie(SessionEnd::RefusedReconnect)]
+#[case::connection_binder(SessionEnd::ReconnectWithConnectionBinder)]
+#[tokio::test]
+async fn a_refused_reconnect_still_reaches_a_client_that_keeps_sending(#[case] end: SessionEnd) {
+    let reasons = Box::pin(run_disconnect_probe(true, end, true)).await;
+    // oracle: spec MS-RDPBCGR §3.3.5.7.1.1
+    assert_reason_then_ultimatum(
+        &reasons,
+        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges),
+    );
+}
+
 const DISCONNECT_REASON: ErrorInfo =
     ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::RpcInitiatedDisconnectByuser);
 
@@ -1481,8 +1499,8 @@ enum SessionEnd {
     /// logon, so the server refuses the reconnect whether it refuses the cookie or falls back to the Client Info
     /// credentials.
     RefusedReconnect,
-    /// The client presents the auto-reconnect cookie the server holds, and the server has a connection binder, which
-    /// can't bind a reconnected connection, so the server refuses it.
+    /// The client presents the auto-reconnect cookie the server holds, but the server has a connection binder, and it
+    /// refuses an auto-reconnect it can't restore to a credential-bound connection before any binding.
     ReconnectWithConnectionBinder,
 }
 
