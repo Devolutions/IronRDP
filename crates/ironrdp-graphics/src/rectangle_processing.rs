@@ -67,21 +67,23 @@ impl Region {
         match self.rectangles.len() {
             0 => Self::new(),
             1 => self.extents.intersect(rectangle).map(Self::from).unwrap_or_default(),
-            _ => {
-                let rectangles = self
-                    .rectangles
-                    .iter()
-                    .take_while(|r| r.top <= rectangle.bottom)
-                    .filter_map(|r| r.intersect(rectangle))
-                    .collect::<Vec<_>>();
-                let extents = InclusiveRectangle::union_all(rectangles.as_slice());
-
-                let mut region = Self { rectangles, extents };
-                region.simplify();
-
-                region
-            }
+            _ => Self::intersect_rectangles(&self.rectangles, rectangle),
         }
+    }
+
+    /// Intersects `rectangle` with a run of a region's rectangles, up to the first one that starts below it.
+    pub(crate) fn intersect_rectangles(rectangles: &[InclusiveRectangle], rectangle: &InclusiveRectangle) -> Self {
+        let rectangles = rectangles
+            .iter()
+            .take_while(|r| r.top <= rectangle.bottom)
+            .filter_map(|r| r.intersect(rectangle))
+            .collect::<Vec<_>>();
+        let extents = InclusiveRectangle::union_all(rectangles.as_slice());
+
+        let mut region = Self { rectangles, extents };
+        region.simplify();
+
+        region
     }
 
     fn simplify(&mut self) {
