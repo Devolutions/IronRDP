@@ -90,7 +90,7 @@ struct Queued {
     data: Rc<[u8]>,
     key: bool,
     /// The picture number of a live chunk, or `None` for a replayed one, whose picture is discarded.
-    number: Option<u64>,
+    live_number: Option<u64>,
 }
 
 /// A replay running ahead of its live chunk.
@@ -192,46 +192,60 @@ impl Stream {
         }
         self.parameter_sets.update(&unit);
         if unit.is_idr() {
-            let key = self
-                .parameter_sets
-                .key_access_unit(data)
-                .ok_or_else(|| DecoderError::msg("an IDR picture without its parameter sets"))?;
-            if MAX_ACCESS_UNIT_BYTES < key.data.len() {
-                return Err(DecoderError::msg("an H.264 access unit past 4 MiB"));
-            }
-            let config = Config {
-                codec: key.sps.codec_string(),
-                size: Some((key.sps.width, key.sps.height)),
-            };
-            let mut lost = Vec::new();
-            if self.open.is_none() || self.open.as_ref() != Some(&config) {
-                lost = self.queue.drain(..).filter_map(|chunk| chunk.number).collect();
-                self.reopen(sink, config)?;
-            }
-            self.full_range.insert(number, key.sps.full_range == Some(true));
-            // Pictures this far back were polled already, so no output needs their entry any more.
-            let oldest_in_flight = number.saturating_sub(MAX_PICTURES_IN_FLIGHT);
-            if let Some(floor) = self.full_range.range(..=oldest_in_flight).next_back().map(|(&n, _)| n) {
-                self.full_range = self.full_range.split_off(&floor);
-            }
-            self.queue.push_back(Queued {
-                data: key.data.into(),
-                key: true,
-                number: Some(number),
-            });
-            Ok(lost)
-        } else {
-            if self.open.is_none() {
-                return Err(DecoderError::msg("waiting for an IDR picture"));
-            }
-            let data: Rc<[u8]> = data.into();
-            self.queue.push_back(Queued {
-                data,
-                key: false,
-                number: Some(number),
-            });
-            Ok(Vec::new())
+            return self.submit_idr(sink, data, number);
         }
+        if self.open.is_none() {
+            return Err(DecoderError::msg("waiting for an IDR picture"));
+        }
+        self.queue.push_back(Queued {
+            data: data.into(),
+            key: false,
+            live_number: Some(number),
+        });
+        Ok(Vec::new())
+    }
+
+    fn submit_idr(&mut self, sink: &mut dyn Sink, data: &[u8], number: u64) -> DecoderResult<Vec<u64>> {
+        let key = self
+            .parameter_sets
+            .key_access_unit(data)
+            .ok_or_else(|| DecoderError::msg("an IDR picture without its parameter sets"))?;
+        if MAX_ACCESS_UNIT_BYTES < key.data.len() {
+            return Err(DecoderError::msg("an H.264 access unit past 4 MiB"));
+        }
+        let config = Config {
+            codec: key.sps.codec_string(),
+            size: Some((key.sps.width, key.sps.height)),
+        };
+        let mut lost = Vec::new();
+        if self.open.as_ref() != Some(&config) {
+            lost = self.drain_queued_pictures();
+            self.reopen(sink, config)?;
+        }
+        self.remember_full_range(number, key.sps.full_range == Some(true));
+        self.queue.push_back(Queued {
+            data: key.data.into(),
+            key: true,
+            live_number: Some(number),
+        });
+        Ok(lost)
+    }
+
+    fn remember_full_range(&mut self, first_number: u64, full_range: bool) {
+        self.full_range.insert(first_number, full_range);
+        let oldest_in_flight = first_number.saturating_sub(MAX_PICTURES_IN_FLIGHT);
+        if let Some(&oldest_needed) = self
+            .full_range
+            .range(..=oldest_in_flight)
+            .next_back()
+            .map(|(number, _)| number)
+        {
+            self.full_range = self.full_range.split_off(&oldest_needed);
+        }
+    }
+
+    fn drain_queued_pictures(&mut self) -> Vec<u64> {
+        self.queue.drain(..).filter_map(|chunk| chunk.live_number).collect()
     }
 
     /// Opens a `VideoDecoder` for `stream_config`, or for the probed codec when the stream's
@@ -295,7 +309,7 @@ impl Stream {
                 let replay = history.units.iter().enumerate().map(|(index, unit)| Queued {
                     data: Rc::clone(unit),
                     key: index == 0,
-                    number: None,
+                    live_number: None,
                 });
                 let rest = core::mem::take(&mut self.queue);
                 self.queue = replay.chain(rest).collect();
@@ -308,21 +322,15 @@ impl Stream {
             let Some(chunk) = self.queue.pop_front() else {
                 break;
             };
-            #[expect(
-                clippy::as_conversions,
-                clippy::cast_precision_loss,
-                reason = "picture numbers stay far below 2^53"
-            )]
-            let timestamp = chunk.number.map_or(-1.0, |number| number as f64);
-            if let Err(failure) = sink.decode(&chunk.data, chunk.key, timestamp) {
+            if let Err(failure) = sink.decode(&chunk.data, chunk.key, timestamp_of(chunk.live_number)) {
                 let mut lost = self.fail(sink, failure);
-                lost.extend(chunk.number);
+                lost.extend(chunk.live_number);
                 return lost;
             }
             self.key_required = false;
             self.outstanding += 1;
             given += 1;
-            if chunk.number.is_none() {
+            if chunk.live_number.is_none() {
                 if let Some(replay) = self.replay.as_mut() {
                     replay.progress_at = now;
                 }
@@ -433,7 +441,7 @@ impl Stream {
         self.outstanding = 0;
         self.history = None;
         self.replay = None;
-        self.queue.drain(..).filter_map(|chunk| chunk.number).collect()
+        self.drain_queued_pictures()
     }
 
     /// Discards everything for a new stream, the support decisions included.
@@ -451,6 +459,28 @@ impl Stream {
         self.unsupported.clear();
         self.full_range.clear();
     }
+}
+
+const REPLAYED_TIMESTAMP: f64 = -1.0;
+
+fn timestamp_of(live_number: Option<u64>) -> f64 {
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_precision_loss,
+        reason = "picture numbers stay far below 2^53"
+    )]
+    live_number.map_or(REPLAYED_TIMESTAMP, |number| number as f64)
+}
+
+/// The picture number a `VideoFrame` timestamp carries, or `None` for a replayed picture.
+pub(crate) fn picture_number(timestamp: f64) -> Option<u64> {
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "non-negative timestamps are the picture numbers"
+    )]
+    (0.0 <= timestamp).then_some(timestamp as u64)
 }
 
 /// The bytes of decoded pictures a session may hold outside the graphics pipeline, across all its
@@ -607,7 +637,10 @@ pub(crate) fn yuv420_planes(
     if !expand_range {
         return Ok(picture);
     }
-    let (luma, chroma) = (expansion_table(16, 219), expansion_table(128 - 112, 224));
+    let (luma, chroma) = (
+        expansion_table(LIMITED_LUMA_BLACK, LIMITED_LUMA_WHITE),
+        expansion_table(LIMITED_CHROMA_MIN, LIMITED_CHROMA_MAX),
+    );
     let rows = |row: fn(&Yuv420Frame, usize) -> Option<&[u8]>, table: &[u8; 256]| {
         let mut plane = Vec::new();
         let mut index = 0;
@@ -628,9 +661,15 @@ pub(crate) fn yuv420_planes(
     )
 }
 
-/// Maps a limited-range sample, `span` levels from `floor` (ITU-R BT.709 §6.10: luma 16 to 235,
-/// chroma 16 to 240), to the full range 0 to 255, rounding and clamping.
-fn expansion_table(floor: u8, span: u16) -> [u8; 256] {
+const LIMITED_LUMA_BLACK: u8 = 16;
+const LIMITED_LUMA_WHITE: u8 = 235;
+const LIMITED_CHROMA_MIN: u8 = 16;
+const LIMITED_CHROMA_MAX: u8 = 240;
+
+/// Maps a limited-range sample between `floor` and `ceiling` (ITU-R BT.709 §6.10) to the full range
+/// 0 to 255, rounding and clamping.
+fn expansion_table(floor: u8, ceiling: u8) -> [u8; 256] {
+    let span = u16::from(ceiling - floor);
     let mut table = [0u8; 256];
     for (sample, expanded) in (0u16..).zip(table.iter_mut()) {
         let above = i32::from(sample) - i32::from(floor);

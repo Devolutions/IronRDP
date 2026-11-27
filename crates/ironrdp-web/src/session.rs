@@ -53,6 +53,7 @@ use web_sys::HtmlCanvasElement;
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
+const DECODE_POLL_INTERVAL_MS: u32 = 25;
 
 #[derive(Clone, Copy)]
 struct SecurityConfig {
@@ -1094,7 +1095,7 @@ impl iron_remote_desktop::Session for Session {
         // UNTESTED: a pending picture is polled at least every 25 ms, so a WebCodecs decoder holding the
         // last picture of an idle stream is flushed; native tests drive `poll_decoded` directly. When
         // changing this loop, check in a browser that a static page paints after its only update.
-        let mut decode_interval = IntervalStream::new(25).fuse();
+        let mut decode_interval = IntervalStream::new(DECODE_POLL_INTERVAL_MS).fuse();
 
         let disconnect_reason = 'outer: loop {
             let outputs = select! {

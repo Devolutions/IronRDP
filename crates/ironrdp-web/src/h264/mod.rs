@@ -261,14 +261,19 @@ struct Registered {
 impl Registered {
     /// Gives queued chunks to the `VideoDecoder`, and fails the pictures a failure loses.
     fn pump(&mut self) {
-        let before = self.stream.decoder_generation();
-        let lost = self.stream.pump(&mut self.sink, now());
-        self.after_stream(before, !lost.is_empty());
+        let now = now();
+        self.drive_stream(|stream, sink| stream.pump(sink, now));
+    }
+
+    fn drive_stream(&mut self, step: impl FnOnce(&mut Stream, &mut JsSink) -> Vec<u64>) {
+        let generation = self.stream.decoder_generation();
+        let lost = step(&mut self.stream, &mut self.sink);
+        self.fail_pictures_if_decoder_lost(generation, &lost);
     }
 
     /// Fails every picture not returned yet when the `VideoDecoder` was closed or replaced.
-    fn after_stream(&mut self, decoder_generation: u64, lost: bool) {
-        if lost || self.stream.decoder_generation() != decoder_generation {
+    fn fail_pictures_if_decoder_lost(&mut self, generation_before: u64, lost: &[u64]) {
+        if !lost.is_empty() || self.stream.decoder_generation() != generation_before {
             self.pictures.fail_all("the WebCodecs decoder was closed");
             (self.notify)();
         }
@@ -283,9 +288,9 @@ impl Registered {
             data
         };
         let number = self.pictures.next_number()?;
-        let before = self.stream.decoder_generation();
+        let generation = self.stream.decoder_generation();
         let lost = self.stream.submit(&mut self.sink, data, number)?;
-        self.after_stream(before, !lost.is_empty());
+        self.fail_pictures_if_decoder_lost(generation, &lost);
         self.pictures.submitted = number + 1;
         self.pump();
         Ok(DecodeStatus::Pending)
@@ -297,9 +302,7 @@ impl Registered {
     }
 
     fn flush(&mut self) {
-        let before = self.stream.decoder_generation();
-        let lost = self.stream.flush(&mut self.sink);
-        self.after_stream(before, !lost.is_empty());
+        self.drive_stream(|stream, sink| stream.flush(sink));
     }
 
     fn reset(&mut self) {
@@ -310,90 +313,66 @@ impl Registered {
     /// Handles a picture the `VideoDecoder` output: starts copying its planes, or drops it.
     fn output(&mut self, frame: JsVideoFrame) {
         self.stream.on_output();
-        let timestamp = frame.timestamp();
-        if timestamp < 0.0 {
-            frame.close_frame();
-            self.pump();
-            return;
-        }
-        #[expect(
-            clippy::as_conversions,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "non-negative timestamps are the submission numbers"
-        )]
-        let number = timestamp as u64;
-        let generation = self.pictures.generation;
-        if self.pictures.awaits(generation, number) {
-            match self.prepare_copy(&frame, number) {
-                Ok(copy) => copy.start(self.sink.id, generation, number, frame),
-                Err(error) => {
-                    frame.close_frame();
-                    self.pictures.finish(generation, number, Err(error), None);
-                    (self.notify)();
-                }
-            }
-        } else {
-            frame.close_frame();
+        match stream::picture_number(frame.timestamp()) {
+            Some(number) if self.pictures.awaits(self.pictures.generation, number) => self.start_copy(frame, number),
+            _ => frame.close_frame(),
         }
         self.pump();
     }
 
+    fn start_copy(&mut self, frame: JsVideoFrame, number: u64) {
+        let generation = self.pictures.generation;
+        match self.prepare_copy(&frame, number) {
+            Ok(copy) => copy.start(self.sink.id, generation, number, frame),
+            Err(error) => {
+                frame.close_frame();
+                self.pictures.finish(generation, number, Err(error), None);
+                (self.notify)();
+            }
+        }
+    }
+
     /// Checks the visible size and format of picture `number`, reserves its bytes in the session
     /// budget, and allocates the buffer for its planes.
-    fn prepare_copy(&mut self, frame: &JsVideoFrame, number: u64) -> DecoderResult<Copy> {
+    fn prepare_copy(&mut self, frame: &JsVideoFrame, number: u64) -> DecoderResult<PlaneCopy> {
+        let format = self.supported_format(frame)?;
+        let rect = visible_rect(frame)?;
+        let options = copy_options(&rect);
+        let bytes = copy_size(frame, &options, &rect)?;
+        let expand_range = self.expands_range(frame, number);
+        let reservation = self
+            .budget
+            .reserve(usize::try_from(bytes).unwrap_or(usize::MAX))
+            .ok_or_else(|| DecoderError::msg("decoded pictures past their session memory budget"))?;
+        Ok(PlaneCopy {
+            buffer: Uint8Array::new_with_length(bytes),
+            options,
+            format,
+            width: rect.width,
+            height: rect.height,
+            expand_range,
+            reservation,
+        })
+    }
+
+    fn supported_format(&mut self, frame: &JsVideoFrame) -> DecoderResult<String> {
         let format = frame.format().unwrap_or_default();
-        if !matches!(format.as_str(), "I420" | "I420A" | "NV12") {
-            if !self.warned_format {
-                self.warned_format = true;
-                warn!(
-                    format,
-                    "The browser decodes H.264 to a format without an MS-RDPEGFX conversion; dropping its pictures"
-                );
-            }
-            return Err(DecoderError::msg(format!("unsupported VideoFrame format {format:?}")));
+        if matches!(format.as_str(), "I420" | "I420A" | "NV12") {
+            return Ok(format);
         }
-        let rect = frame
-            .visible_rect()
-            .ok_or_else(|| DecoderError::msg("a VideoFrame without a visible rectangle"))?;
-        let (Some(x), Some(y), Some(width), Some(height)) = (
-            get_u32(&rect, "x"),
-            get_u32(&rect, "y"),
-            get_u32(&rect, "width"),
-            get_u32(&rect, "height"),
-        ) else {
-            return Err(DecoderError::msg("an unreadable VideoFrame visible rectangle"));
-        };
-        if !(0 < width && width <= MAX_PICTURE_SIDE && 0 < height && height <= MAX_PICTURE_SIDE) {
-            return Err(DecoderError::msg(format!("a {width}x{height} picture")));
+        if !self.warned_format {
+            self.warned_format = true;
+            warn!(
+                format,
+                "The browser decodes H.264 to a format without an MS-RDPEGFX conversion; dropping its pictures"
+            );
         }
-        let (Ok(width16), Ok(height16)) = (u16::try_from(width), u16::try_from(height)) else {
-            return Err(DecoderError::msg("picture size past 65535"));
-        };
-        let copy_rect = Object::new();
-        set(&copy_rect, "x", &JsValue::from(x));
-        set(&copy_rect, "y", &JsValue::from(y));
-        set(&copy_rect, "width", &JsValue::from(width));
-        set(&copy_rect, "height", &JsValue::from(height));
-        let options = Object::new();
-        set(&options, "rect", &copy_rect);
-        let size = frame
-            .allocation_size(&options)
-            .map_err(|e| DecoderError::msg(format!("VideoFrame.allocationSize: {e:?}")))?;
-        // Four bytes per pixel bounds every 8-bit 4:2:0 layout, alpha plane included.
-        let largest = f64::from(width) * f64::from(height) * 4.0;
-        if !(0.0 < size && size <= largest) {
-            return Err(DecoderError::msg(format!("a {size}-byte VideoFrame copy")));
-        }
-        #[expect(
-            clippy::as_conversions,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "checked to be positive and at most 4 * 8192 * 8192 just before"
-        )]
-        let bytes = size as u32;
-        // A browser may convert a full-range stream to limited range, as Chrome's VideoToolbox decoder
-        // does, and says so in the frame's color space; MS-RDPEGFX needs the samples sent.
+        Err(DecoderError::msg(format!("unsupported VideoFrame format {format:?}")))
+    }
+
+    // A browser may convert a full-range stream to limited range, as Chrome's VideoToolbox decoder
+    // does, and says so in the frame's color space; MS-RDPEGFX needs the samples sent.
+    fn expands_range(&mut self, frame: &JsVideoFrame, number: u64) -> bool {
         let space = frame.color_space();
         let field = |key: &str| {
             space
@@ -415,24 +394,69 @@ impl Registered {
                 );
             }
         }
-        let reservation = self
-            .budget
-            .reserve(usize::try_from(bytes).unwrap_or(usize::MAX))
-            .ok_or_else(|| DecoderError::msg("decoded pictures past their session memory budget"))?;
-        Ok(Copy {
-            buffer: Uint8Array::new_with_length(bytes),
-            options,
-            format,
-            width: width16,
-            height: height16,
-            expand_range,
-            reservation,
-        })
+        expand_range
     }
 }
 
+struct VisibleRect {
+    x: u32,
+    y: u32,
+    width: u16,
+    height: u16,
+}
+
+fn visible_rect(frame: &JsVideoFrame) -> DecoderResult<VisibleRect> {
+    let rect = frame
+        .visible_rect()
+        .ok_or_else(|| DecoderError::msg("a VideoFrame without a visible rectangle"))?;
+    let (Some(x), Some(y), Some(width), Some(height)) = (
+        get_u32(&rect, "x"),
+        get_u32(&rect, "y"),
+        get_u32(&rect, "width"),
+        get_u32(&rect, "height"),
+    ) else {
+        return Err(DecoderError::msg("an unreadable VideoFrame visible rectangle"));
+    };
+    if !(0 < width && width <= MAX_PICTURE_SIDE && 0 < height && height <= MAX_PICTURE_SIDE) {
+        return Err(DecoderError::msg(format!("a {width}x{height} picture")));
+    }
+    let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
+        return Err(DecoderError::msg("picture size past 65535"));
+    };
+    Ok(VisibleRect { x, y, width, height })
+}
+
+fn copy_options(rect: &VisibleRect) -> Object {
+    let copy_rect = Object::new();
+    set(&copy_rect, "x", &JsValue::from(rect.x));
+    set(&copy_rect, "y", &JsValue::from(rect.y));
+    set(&copy_rect, "width", &JsValue::from(rect.width));
+    set(&copy_rect, "height", &JsValue::from(rect.height));
+    let options = Object::new();
+    set(&options, "rect", &copy_rect);
+    options
+}
+
+fn copy_size(frame: &JsVideoFrame, options: &Object, rect: &VisibleRect) -> DecoderResult<u32> {
+    let size = frame
+        .allocation_size(options)
+        .map_err(|e| DecoderError::msg(format!("VideoFrame.allocationSize: {e:?}")))?;
+    // Four bytes per pixel bounds every 8-bit 4:2:0 layout, alpha plane included.
+    let largest = f64::from(rect.width) * f64::from(rect.height) * 4.0;
+    if !(0.0 < size && size <= largest) {
+        return Err(DecoderError::msg(format!("a {size}-byte VideoFrame copy")));
+    }
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked to be positive and at most 4 * 8192 * 8192 just before"
+    )]
+    Ok(size as u32)
+}
+
 /// A plane copy about to start, with the memory it holds until it settles.
-struct Copy {
+struct PlaneCopy {
     buffer: Uint8Array,
     options: Object,
     format: String,
@@ -442,7 +466,7 @@ struct Copy {
     reservation: Reservation,
 }
 
-impl Copy {
+impl PlaneCopy {
     /// Copies the planes of `frame` in the background and files them as picture `number` of
     /// `generation` of decoder `id`.
     // UNTESTED: the copy owns its reservation until its promise settles, whatever happens to the
