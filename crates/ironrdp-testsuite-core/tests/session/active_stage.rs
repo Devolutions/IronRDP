@@ -470,6 +470,225 @@ fn active_stage_widens_after_a_reset_and_records_damage() {
     );
 }
 
+/// A frame whose H.264 picture decodes asynchronously is acknowledged and painted when the
+/// session polls the pipeline after the decoder finished, not when its data arrives.
+// oracle: spec MS-RDPEGFX §2.2.2.13 (the client acknowledges that all the commands of the frame were decoded)
+#[test]
+fn active_stage_acknowledges_an_asynchronously_decoded_frame_when_polled() {
+    use std::borrow::Cow;
+    use std::sync::Mutex;
+
+    use ironrdp_core::{MonotonicInstant, decode, encode_vec};
+    use ironrdp_dvc::DrdynvcClient;
+    use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+    use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::decode::{DecodeStatus, DecodedFrame, DecodedPicture, DecoderError, DecoderResult, H264Decoder};
+    use ironrdp_egfx::pdu::{
+        Avc420Region, Codec1Type, CreateSurfacePdu, EndFramePdu, GfxPdu, MapSurfaceToOutputPdu,
+        PixelFormat as GfxPixelFormat, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
+        encode_avc420_bitmap_stream,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+    use ironrdp_pdu::Action;
+    use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
+    use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
+    use ironrdp_svc::StaticChannelSet;
+
+    struct Handler;
+    impl GraphicsPipelineHandler for Handler {}
+
+    /// Leaves each picture pending until the test sets the shared flag.
+    struct Decoder(Arc<Mutex<bool>>);
+    impl H264Decoder for Decoder {
+        fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
+            Err(DecoderError::msg("asynchronous only"))
+        }
+
+        fn submit(&mut self, _data: &[u8]) -> DecoderResult<DecodeStatus> {
+            Ok(DecodeStatus::Pending)
+        }
+
+        fn poll_decoded(&mut self) -> Option<DecoderResult<DecodedPicture>> {
+            let mut pixels = Vec::new();
+            for _ in 0..16 * 16 {
+                pixels.extend_from_slice(&[10, 20, 30, 0xFF]);
+            }
+            core::mem::take(&mut *self.0.lock().unwrap()).then(|| Ok(DecodedFrame::new(pixels, 16, 16).into()))
+        }
+    }
+
+    const DRDYNVC: u16 = 1004;
+    const EGFX: u32 = 7;
+
+    let finished = Arc::new(Mutex::new(false));
+    let mut channels = StaticChannelSet::new();
+    channels.insert(DrdynvcClient::new().with_dynamic_channel(GraphicsPipelineClient::new(
+        Box::new(Handler),
+        Some(Box::new(Decoder(Arc::clone(&finished)))),
+    )));
+    channels.attach_channel_id(core::any::TypeId::of::<DrdynvcClient>(), DRDYNVC);
+    let mut active_stage = ActiveStageBuilder {
+        static_channels: channels,
+        user_channel_id: 1002,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build();
+
+    // A DRDYNVC PDU as the server sends it: one static channel chunk.
+    let frame = |pdu: &DrdynvcServerPdu| {
+        let pdu = encode_vec(pdu).expect("encode DRDYNVC PDU");
+        let mut data = encode_vec(&ChannelPduHeader {
+            length: u32::try_from(pdu.len()).expect("fits"),
+            flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+        })
+        .expect("encode channel header");
+        data.extend_from_slice(&pdu);
+        encode_vec(&X224(SendDataIndication {
+            initiator_id: 1002,
+            channel_id: DRDYNVC,
+            user_data: Cow::Owned(data),
+        }))
+        .expect("encode X224")
+    };
+    let gfx = |pdus: &[GfxPdu]| {
+        let mut bytes = Vec::new();
+        for pdu in pdus {
+            bytes.extend(encode_vec(pdu).expect("encode EGFX PDU"));
+        }
+        frame(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+            EGFX,
+            wrap_uncompressed(&bytes),
+        ))))
+    };
+    let summary = |outputs: Vec<ActiveStageOutput>| -> (usize, usize) {
+        outputs.iter().fold((0, 0), |(frames, updates), output| match output {
+            ActiveStageOutput::ResponseFrame(frame) if !frame.is_empty() => (frames + 1, updates),
+            ActiveStageOutput::GraphicsUpdate(_) => (frames, updates + 1),
+            _ => (frames, updates),
+        })
+    };
+    // The EGFX PDUs of a response frame: X.224, MCS Send Data Request, channel header, DRDYNVC Data.
+    let sent_gfx = |frame: &[u8]| -> (u16, u32, GfxPdu) {
+        let request: X224<SendDataRequest<'_>> = decode(frame).expect("an MCS Send Data Request");
+        let user_data = request.0.user_data.as_ref();
+        let header: ChannelPduHeader = decode(user_data).expect("a channel PDU header");
+        let pdu: DrdynvcClientPdu = decode(&user_data[8..]).expect("a DRDYNVC PDU");
+        let assert_whole = usize::try_from(header.length).expect("fits") == user_data.len() - 8;
+        assert!(assert_whole, "one chunk");
+        let DrdynvcClientPdu::Data(data) = pdu else {
+            panic!("a DRDYNVC Data PDU, got {pdu:?}");
+        };
+        let dynamic_channel = data.channel_id();
+        let DrdynvcDataPdu::Data(data) = data else {
+            panic!("an unfragmented DRDYNVC Data PDU");
+        };
+        let gfx: GfxPdu = decode(data.data()).expect("an EGFX PDU");
+        (request.0.channel_id, dynamic_channel, gfx)
+    };
+
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 16, 16);
+    active_stage
+        .process(
+            &mut image,
+            Action::X224,
+            &frame(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+                EGFX,
+                ironrdp_egfx::CHANNEL_NAME.to_owned(),
+            ))),
+            None,
+        )
+        .expect("open the EGFX channel");
+    let setup = [
+        GfxPdu::ResetGraphics(ResetGraphicsPdu {
+            width: 16,
+            height: 16,
+            monitors: Vec::new(),
+        }),
+        GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id: 1,
+            width: 16,
+            height: 16,
+            pixel_format: GfxPixelFormat::XRgb,
+        }),
+        GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+            surface_id: 1,
+            output_origin_x: 0,
+            output_origin_y: 0,
+        }),
+    ];
+    active_stage
+        .process(&mut image, Action::X224, &gfx(&setup), None)
+        .expect("surface setup");
+    let h264_frame = [
+        GfxPdu::StartFrame(StartFramePdu {
+            timestamp: Timestamp {
+                milliseconds: 0,
+                seconds: 0,
+                minutes: 0,
+                hours: 0,
+            },
+            frame_id: 1,
+        }),
+        GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id: 1,
+            codec_id: Codec1Type::Avc420,
+            pixel_format: GfxPixelFormat::XRgb,
+            destination_rectangle: ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 16,
+                bottom: 16,
+            },
+            bitmap_data: encode_avc420_bitmap_stream(&[Avc420Region::full_frame(16, 16, 22)], &[0, 0, 0, 1, 0x65]),
+        }),
+        GfxPdu::EndFrame(EndFramePdu { frame_id: 1 }),
+    ];
+
+    let on_arrival = summary(
+        active_stage
+            .process(&mut image, Action::X224, &gfx(&h264_frame), None)
+            .expect("H.264 frame"),
+    );
+    let polled_early = summary(
+        active_stage
+            .poll_graphics_pipeline(&mut image, MonotonicInstant::from_millis(0))
+            .expect("early poll"),
+    );
+    *finished.lock().unwrap() = true;
+    let polled_after = active_stage
+        .poll_graphics_pipeline(&mut image, MonotonicInstant::from_millis(1))
+        .expect("poll");
+
+    assert_eq!(
+        on_arrival,
+        (0, 0),
+        "nothing is acknowledged or painted while the picture decodes"
+    );
+    assert_eq!(polled_early, (0, 0));
+    let [
+        ActiveStageOutput::ResponseFrame(response),
+        ActiveStageOutput::GraphicsUpdate(region),
+    ] = polled_after.as_slice()
+    else {
+        panic!("a response and a graphics update, got {polled_after:?}");
+    };
+    let (mcs_channel, dynamic_channel, ack) = sent_gfx(response);
+    assert_eq!((mcs_channel, dynamic_channel), (DRDYNVC, EGFX));
+    let GfxPdu::FrameAcknowledge(ack) = ack else {
+        panic!("a frame acknowledgement, got {ack:?}");
+    };
+    assert_eq!((ack.frame_id, ack.total_frames_decoded), (1, 1));
+    assert_eq!((region.left, region.top, region.right, region.bottom), (0, 0, 15, 15));
+    assert_eq!(&image.data()[..4], &[10, 20, 30, 0xFF], "the picture is in the image");
+}
+
 /// A surface the server maps to a RemoteApp window is not part of the image:
 /// `composite_graphics_pipeline` hands its pixels back as a window update, once,
 /// so they don't pile up in the pipeline's memory budget.

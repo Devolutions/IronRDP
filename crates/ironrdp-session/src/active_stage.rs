@@ -715,6 +715,45 @@ impl ActiveStage {
         Ok((batch, stage_outputs))
     }
 
+    /// Paints the H.264 pictures the graphics pipeline's asynchronous decoder returned, with the
+    /// commands held back behind them, and sends the acknowledgements of the frames this completed.
+    ///
+    /// Call it when that decoder signals a returned picture ([`ironrdp_egfx::decode::H264Decoder::submit`]),
+    /// and regularly while [`GraphicsPipelineClient::has_pending_decodes`], with `now` read from a
+    /// monotonic clock: the pipeline flushes and then gives up pictures that stay pending
+    /// ([`GraphicsPipelineClient::poll_decoded`]).
+    /// Returns the frame to send and the graphics updates, like [`Self::process`], and nothing
+    /// without a graphics pipeline.
+    /// Returns an error when Soft-Sync routes the graphics pipeline through a multitransport tunnel.
+    pub fn poll_graphics_pipeline(
+        &mut self,
+        image: &mut DecodedImage,
+        now: MonotonicInstant,
+    ) -> SessionResult<Vec<ActiveStageOutput>> {
+        self.damage_regions.clear();
+        let Some(mut gfx) = self.get_dvc_mut::<GraphicsPipelineClient>() else {
+            return Ok(Vec::new());
+        };
+        let channel_id = gfx.channel_id();
+        let messages = gfx.processor_mut().poll_decoded(now).map_err(SessionError::pdu)?;
+        let mut stage_outputs = Vec::new();
+        if !messages.is_empty() {
+            let messages = ironrdp_dvc::encode_dvc_messages(channel_id, messages, ironrdp_svc::ChannelFlags::empty())
+                .map_err(SessionError::encode)?;
+            let batch = DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?;
+            stage_outputs.push(ActiveStageOutput::ResponseFrame(self.encode_dvc_batch_over_tcp(batch)?));
+        }
+        let (region, window_updates) = self.drain_graphics_pipeline(image)?;
+        if let Some(region) = region {
+            stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
+        }
+        if !window_updates.is_empty() {
+            stage_outputs.push(ActiveStageOutput::WindowSurfaceUpdates(window_updates));
+        }
+        self.widen_to_full_refresh(image, &mut stage_outputs);
+        Ok(stage_outputs)
+    }
+
     /// Prepares a resize request for routing over TCP or a Soft-Sync tunnel.
     ///
     /// If the Display Control Virtual Channel is not available, not yet connected, or has not

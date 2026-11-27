@@ -4,6 +4,7 @@
 /// EGFX dynamic virtual channel name per MS-RDPEGFX
 pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 
+pub mod annex_b;
 pub mod avc444;
 pub mod cache;
 pub mod client;

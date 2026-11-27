@@ -20,6 +20,8 @@
 
 use core::fmt;
 
+use ironrdp_pdu::geometry::ExclusiveRectangle;
+
 // ============================================================================
 // Decoded Frame
 // ============================================================================
@@ -203,6 +205,33 @@ impl Yuv420Frame {
         }
         DecodedFrame::new(rgba, u32::from(self.width), u32::from(self.height))
     }
+
+    /// Converts `region` of the picture to RGBA rows like [`Yuv420Frame::to_rgba`].
+    ///
+    /// The region is clipped to the picture, and an empty one converts to nothing.
+    pub fn region_to_rgba(&self, region: &ExclusiveRectangle) -> Vec<u8> {
+        let right = usize::from(region.right.min(self.width));
+        let bottom = usize::from(region.bottom.min(self.height));
+        let (left, top) = (usize::from(region.left), usize::from(region.top));
+        if !(left < right && top < bottom) {
+            return Vec::new();
+        }
+        let mut rgba = Vec::with_capacity((right - left) * (bottom - top) * 4);
+        for row in top..bottom {
+            let (Some(y), Some(u), Some(v)) = (self.luma_row(row), self.u_row(row / 2), self.v_row(row / 2)) else {
+                break;
+            };
+            for col in left..right {
+                rgba.extend_from_slice(&crate::avc444::yuv_to_rgba(y[col], u[col / 2], v[col / 2]));
+            }
+        }
+        rgba
+    }
+
+    /// The bytes the planes hold.
+    pub fn allocated_bytes(&self) -> usize {
+        self.y.len() + self.u.len() + self.v.len()
+    }
 }
 
 impl fmt::Debug for Yuv420Frame {
@@ -273,6 +302,64 @@ impl core::error::Error for DecoderError {
 /// Result type for decoder operations
 pub type DecoderResult<T> = Result<T, DecoderError>;
 
+/// A picture an H.264 decoder produced.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum DecodedPicture {
+    /// RGBA pixels the decoder converted itself.
+    Rgba(DecodedFrame),
+    /// YUV 4:2:0 planes, which the graphics pipeline converts with the color transform MS-RDPEGFX specifies.
+    Yuv420(Yuv420Frame),
+}
+
+impl DecodedPicture {
+    /// Picture width in pixels.
+    pub fn width(&self) -> u32 {
+        match self {
+            Self::Rgba(frame) => frame.width(),
+            Self::Yuv420(picture) => u32::from(picture.width()),
+        }
+    }
+
+    /// Picture height in pixels.
+    pub fn height(&self) -> u32 {
+        match self {
+            Self::Rgba(frame) => frame.height(),
+            Self::Yuv420(picture) => u32::from(picture.height()),
+        }
+    }
+
+    /// The bytes the picture holds.
+    pub fn allocated_bytes(&self) -> usize {
+        match self {
+            Self::Rgba(frame) => frame.data().len(),
+            Self::Yuv420(picture) => picture.allocated_bytes(),
+        }
+    }
+}
+
+impl From<DecodedFrame> for DecodedPicture {
+    fn from(frame: DecodedFrame) -> Self {
+        Self::Rgba(frame)
+    }
+}
+
+impl From<Yuv420Frame> for DecodedPicture {
+    fn from(picture: Yuv420Frame) -> Self {
+        Self::Yuv420(picture)
+    }
+}
+
+/// What [`H264Decoder::submit`] did with a picture.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum DecodeStatus {
+    /// The picture is decoded.
+    Ready(DecodedPicture),
+    /// The picture is decoding, and [`H264Decoder::poll_decoded`] returns it once done.
+    Pending,
+}
+
 // ============================================================================
 // H.264 Decoder Trait
 // ============================================================================
@@ -311,6 +398,37 @@ pub trait H264Decoder: Send {
     /// macroblock alignment (16x16). The caller crops to fit.
     fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame>;
 
+    /// Starts decoding H.264 NAL units like [`H264Decoder::decode`], for a decoder that may finish later.
+    ///
+    /// An asynchronous decoder, such as a browser's, returns [`DecodeStatus::Pending`] and later
+    /// yields the picture from [`H264Decoder::poll_decoded`].
+    /// The graphics pipeline then holds back the commands that follow the picture, and the
+    /// acknowledgement of its frame, until the picture is out.
+    /// The default decodes at once with [`H264Decoder::decode`].
+    /// The pipeline calls this instead of [`H264Decoder::decode`] for AVC420 when
+    /// [`H264Decoder::supports_yuv420`] is `false`.
+    /// Decoders returning YUV planes, and so AVC444, still decode synchronously.
+    fn submit(&mut self, data: &[u8]) -> DecoderResult<DecodeStatus> {
+        self.decode(data).map(|frame| DecodeStatus::Ready(frame.into()))
+    }
+
+    /// The oldest picture [`H264Decoder::submit`] left pending, or `None` while it is still decoding.
+    ///
+    /// Each pending submission yields at most one result, picture or error, in submission order.
+    /// The pipeline waits for it, asks the decoder to [`H264Decoder::flush`] when it is late, and
+    /// gives up on it when it is later still: the update is dropped and the decoder reset.
+    /// [`H264Decoder::reset`] discards the pending submissions, which then yield nothing.
+    fn poll_decoded(&mut self) -> Option<DecoderResult<DecodedPicture>> {
+        None
+    }
+
+    /// Outputs the pending pictures the decoder holds back for later input.
+    ///
+    /// The pipeline calls this when the oldest pending picture is late, as when the server sends
+    /// nothing more until that picture's frame is acknowledged.
+    /// The default does nothing.
+    fn flush(&mut self) {}
+
     /// Decode H.264 NAL units like [`H264Decoder::decode`], into the planes of the picture.
     ///
     /// The graphics pipeline converts these itself with the color transform MS-RDPEGFX
@@ -347,7 +465,8 @@ pub trait H264Decoder: Send {
     ///
     /// Called when surfaces are reset (e.g., on `ResetGraphics`).
     /// The decoder should drop any internal state and prepare for
-    /// a new stream.
+    /// a new stream, which starts with a key frame.
+    /// The pipeline resets a decoder with pending pictures only when it discards them too.
     fn reset(&mut self) {
         // Default: no-op
     }

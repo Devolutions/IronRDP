@@ -114,6 +114,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "egfx_annex_b"
+path = "fuzz_targets/egfx_annex_b.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "egfx_multi_frame"
 path = "fuzz_targets/egfx_multi_frame.rs"
 test = false

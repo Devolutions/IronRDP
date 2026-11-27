@@ -22,6 +22,7 @@ mod clipboard;
 mod cursor;
 mod entra;
 mod error;
+mod h264;
 mod image;
 mod input;
 mod network_client;

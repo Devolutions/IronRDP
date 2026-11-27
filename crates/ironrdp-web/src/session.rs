@@ -42,6 +42,7 @@ use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
 use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+use ironrdp_egfx::decode::H264Decoder;
 use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
 use tap::prelude::*;
@@ -52,6 +53,7 @@ use web_sys::HtmlCanvasElement;
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
+const DECODE_POLL_INTERVAL_MS: u32 = 25;
 
 #[derive(Clone, Copy)]
 struct SecurityConfig {
@@ -107,6 +109,7 @@ struct SessionBuilderInner {
     enable_standard_rdp_security: bool,
     enable_server_pointer: bool,
     legacy_graphics: bool,
+    gfx_h264: bool,
     outbound_message_size_limit: Option<usize>,
     performance_flags: Option<PerformanceFlags>,
     desktop_scale_factor: Option<u32>,
@@ -164,6 +167,7 @@ impl Default for SessionBuilderInner {
             enable_standard_rdp_security: false,
             enable_server_pointer: true,
             legacy_graphics: false,
+            gfx_h264: false,
             outbound_message_size_limit: None,
             performance_flags: None,
             desktop_scale_factor: None,
@@ -340,6 +344,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             };
             |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
             |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
+            |gfx_h264: bool| { self.0.borrow_mut().gfx_h264 = gfx_h264 };
             |outbound_message_size_limit: f64| {
                 let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
                     #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -727,6 +732,13 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             })
             .transpose()?;
 
+        let gfx_h264 = self.0.borrow().gfx_h264;
+        let h264 = if gfx_h264 && !legacy_graphics {
+            crate::h264::supported_codec().await
+        } else {
+            None
+        };
+
         let (connection_result, ws) = connect(ConnectParams {
             ws,
             config,
@@ -748,6 +760,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 .then(|| crate::audio::WasmAudioBackend::new(input_events_tx.clone())),
             camera_channels,
             legacy_graphics,
+            h264: h264.map(|codec| (codec, input_events_tx.clone())),
         })
         .await?;
 
@@ -898,6 +911,8 @@ pub(crate) enum RdpInputEvent {
         physical_size: Option<(u32, u32)>,
     },
     TerminateSession,
+    /// The graphics pipeline's H.264 decoder finished a picture.
+    GraphicsDecoded,
 }
 
 pub(crate) struct SessionTerminationInfo {
@@ -1076,6 +1091,11 @@ impl iron_remote_desktop::Session for Session {
 
         // Timer interval for driving clipboard lock timeouts (5 second interval)
         let mut cleanup_interval = IntervalStream::new(5_000).fuse();
+        // Polls the graphics pipeline while H.264 pictures are pending, so late ones are flushed or given up.
+        // UNTESTED: a pending picture is polled at least every 25 ms, so a WebCodecs decoder holding the
+        // last picture of an idle stream is flushed; native tests drive `poll_decoded` directly. When
+        // changing this loop, check in a browser that a static page paints after its only update.
+        let mut decode_interval = IntervalStream::new(DECODE_POLL_INTERVAL_MS).fuse();
 
         let disconnect_reason = 'outer: loop {
             let outputs = select! {
@@ -1276,6 +1296,19 @@ impl iron_remote_desktop::Session for Session {
                             active_stage.graceful_shutdown()
                                 .context("graceful shutdown")?
                         }
+                        RdpInputEvent::GraphicsDecoded => {
+                            active_stage.poll_graphics_pipeline(&mut image, crate::h264::now())?
+                        }
+                    }
+                }
+                _ = decode_interval.next() => {
+                    let pending = active_stage
+                        .get_dvc::<GraphicsPipelineClient>()
+                        .is_some_and(|gfx| gfx.processor().has_pending_decodes());
+                    if pending {
+                        active_stage.poll_graphics_pipeline(&mut image, crate::h264::now())?
+                    } else {
+                        Vec::new()
                     }
                 }
                 _ = cleanup_interval.next() => {
@@ -2010,6 +2043,8 @@ struct ConnectParams {
     audio_backend: Option<crate::audio::WasmAudioBackend>,
     camera_channels: Option<crate::camera::CameraChannels>,
     legacy_graphics: bool,
+    /// The WebCodecs codec string to decode H.264 with, and where to announce finished pictures.
+    h264: Option<(&'static str, mpsc::UnboundedSender<RdpInputEvent>)>,
 }
 
 fn default_printer_driver_name() -> String {
@@ -2110,6 +2145,7 @@ async fn connect(
         audio_backend,
         camera_channels,
         legacy_graphics,
+        h264,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
@@ -2139,12 +2175,25 @@ async fn connect(
 
     let mut dynamic_channels = DrdynvcClient::new();
     if !legacy_graphics {
-        dynamic_channels = dynamic_channels.with_dynamic_channel(GraphicsPipelineClient::new(
-            Box::new(NoopGraphicsPipelineHandler),
-            // The browser build has no H.264 decoder, so the pipeline filters out the AVC
-            // capability sets and falls back to non-AVC V8.
-            None,
-        ));
+        // Without an H.264 decoder, the pipeline filters out the AVC capability sets and falls
+        // back to non-AVC V8. AVC444 needs pictures decoded synchronously, which WebCodecs does
+        // not, so it is filtered out too, leaving V8.1 with AVC420.
+        let gfx = match h264 {
+            Some((codec, tx)) => {
+                let budget = crate::h264::SessionBudget::new();
+                let h264_decoder = move || -> Box<dyn H264Decoder> {
+                    let tx = tx.clone();
+                    let notify: Rc<dyn Fn()> = Rc::new(move || {
+                        let _ = tx.unbounded_send(RdpInputEvent::GraphicsDecoded);
+                    });
+                    Box::new(crate::h264::WebCodecsDecoder::new(codec, &budget, notify))
+                };
+                GraphicsPipelineClient::new(Box::new(NoopGraphicsPipelineHandler), Some(h264_decoder()))
+                    .with_h264_decoder_factory(Box::new(move || Some(h264_decoder())))
+            }
+            None => GraphicsPipelineClient::new(Box::new(NoopGraphicsPipelineHandler), None),
+        };
+        dynamic_channels = dynamic_channels.with_dynamic_channel(gfx);
     }
     if use_display_control {
         dynamic_channels = dynamic_channels.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));

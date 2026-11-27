@@ -1,3 +1,5 @@
+mod annex_b;
+mod async_decode;
 mod avc;
 mod avc444;
 mod capabilities;
