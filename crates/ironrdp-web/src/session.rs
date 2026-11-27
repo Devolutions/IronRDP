@@ -727,7 +727,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             })
             .transpose()?;
 
-        let (connection_result, ws) = connect(ConnectParams {
+        let (connection_result, framed) = connect(ConnectParams {
             ws,
             config,
             proxy_auth_token: auth_token,
@@ -753,7 +753,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         info!("Connected!");
 
-        let (rdp_reader, rdp_writer) = futures_util::AsyncReadExt::split(ws);
+        let (rdp_reader, rdp_writer) = split_for_session(framed);
 
         let (writer_tx, writer_rx) = mpsc::unbounded();
 
@@ -928,7 +928,7 @@ pub(crate) struct Session {
     // Consumed when `run` is called
     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
     connection_result: RefCell<Option<connector::ConnectionResult>>,
-    rdp_reader: RefCell<Option<ReadHalf<WebSocket>>>,
+    rdp_reader: RefCell<Option<ironrdp_futures::LocalFuturesFramed<ReadHalf<WebSocket>>>>,
     clipboard: RefCell<Option<Option<WasmClipboard>>>,
     printer: RefCell<Option<Option<WasmPrinter>>>,
 }
@@ -1006,7 +1006,7 @@ impl iron_remote_desktop::Session for Session {
     type Error = IronError;
 
     async fn run(&self) -> Result<Self::SessionTerminationInfo, Self::Error> {
-        let rdp_reader = self
+        let mut framed = self
             .rdp_reader
             .borrow_mut()
             .take()
@@ -1030,8 +1030,6 @@ impl iron_remote_desktop::Session for Session {
 
         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
         let mut wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
-
-        let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
 
         debug!("Initialize canvas");
 
@@ -2111,7 +2109,13 @@ async fn connect(
         camera_channels,
         legacy_graphics,
     }: ConnectParams,
-) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
+) -> Result<
+    (
+        connector::ConnectionResult,
+        ironrdp_futures::LocalFuturesFramed<WebSocket>,
+    ),
+    IronError,
+> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
     // In web browser environments, we do not have an easy access to the local address of the socket.
@@ -2196,9 +2200,25 @@ async fn connect(
     .await?
     .into_connected()?;
 
-    let ws = framed.into_inner_no_leftover();
+    Ok((connection_result, framed))
+}
 
-    Ok((connection_result, ws))
+/// Splits the connection's stream into the session's reader and writer.
+///
+/// The reader starts with the bytes the connection sequence read past its last PDU.
+/// A server may send the first PDUs of the session, such as the DRDYNVC Capabilities Request, in the same read as the Font Map PDU.
+fn split_for_session<S>(
+    framed: ironrdp_futures::LocalFuturesFramed<S>,
+) -> (ironrdp_futures::LocalFuturesFramed<ReadHalf<S>>, WriteHalf<S>)
+where
+    S: futures_util::AsyncRead + futures_util::AsyncWrite,
+{
+    let (stream, leftover) = framed.into_inner();
+    let (reader, writer) = futures_util::AsyncReadExt::split(stream);
+    (
+        ironrdp_futures::LocalFuturesFramed::new_with_leftover(reader, leftover),
+        writer,
+    )
 }
 
 struct RDCleanPathConnectParams {
@@ -2835,6 +2855,33 @@ mod tests {
             final_len > request_len,
             "expected finalization to write more data: {final_len} <= {request_len}"
         );
+    }
+
+    // oracle: regression #2545
+    #[test]
+    fn the_session_reads_the_pdus_read_with_the_last_connection_pdu() {
+        // Each is an X.224 Data TPDU: a TPKT header (version 3, reserved, length), then LI 2, DT 0xF0 and EOT 0x80.
+        const LAST_CONNECTION_PDU: [u8; 7] = [0x03, 0x00, 0x00, 0x07, 0x02, 0xF0, 0x80];
+        // This one carries two bytes of user data.
+        const FIRST_SESSION_PDU: [u8; 9] = [0x03, 0x00, 0x00, 0x09, 0x02, 0xF0, 0x80, 0xAB, 0xCD];
+        let mut framed = ironrdp_futures::LocalFuturesFramed::new(Cursor::new(
+            [&LAST_CONNECTION_PDU[..], &FIRST_SESSION_PDU].concat(),
+        ));
+        framed
+            .read_pdu()
+            .now_or_never()
+            .expect("in-memory read should be ready")
+            .expect("the connection sequence reads its last PDU");
+
+        let (mut reader, _writer) = split_for_session(framed);
+        let (action, pdu) = reader
+            .read_pdu()
+            .now_or_never()
+            .expect("in-memory read should be ready")
+            .expect("the session reads the PDU that came with the last connection PDU");
+
+        assert_eq!(action, ironrdp::pdu::Action::X224);
+        assert_eq!(pdu[..], FIRST_SESSION_PDU);
     }
 
     #[test]
