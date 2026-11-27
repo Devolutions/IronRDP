@@ -29,6 +29,9 @@ const MAX_PPS_ID: u32 = 255;
 const MAX_PARAMETER_SET_BYTES: usize = 4096;
 /// Upper bound on a picture side in macroblocks: 16384 pixels, twice the largest RDP desktop.
 const MAX_SIDE_IN_MBS: u32 = 1024;
+/// The `profile_idc` values whose sequence parameter set carries `chroma_format_idc`, the bit depths
+/// and the scaling matrices, in the order of the condition in the SPS syntax (7.3.2.1.1).
+const PROFILES_WITH_CHROMA_INFO: [u8; 13] = [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135];
 
 /// The NAL units of an Annex B byte stream, each from its header byte, without start codes.
 ///
@@ -300,10 +303,7 @@ impl SequenceParameterSet {
         let level_idc = bits.byte()?;
         bits.at_most(MAX_SPS_ID)?; // seq_parameter_set_id
         let mut chroma_format_idc = 1;
-        if matches!(
-            profile_idc,
-            100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
-        ) {
+        if PROFILES_WITH_CHROMA_INFO.contains(&profile_idc) {
             chroma_format_idc = bits.at_most(3)?;
             if chroma_format_idc == 3 {
                 bits.bit()?; // separate_colour_plane_flag
