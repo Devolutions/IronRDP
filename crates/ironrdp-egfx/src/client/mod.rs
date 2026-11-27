@@ -61,7 +61,7 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
-use ironrdp_core::{Decode as _, ReadCursor, impl_as_any};
+use ironrdp_core::{Decode as _, MonotonicInstant, ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_graphics::clearcodec::ClearCodecDecoder;
 use ironrdp_graphics::progressive::{ProgressiveDecoder, TILE_BYTES_PER_PIXEL, TILE_DIM};
@@ -73,6 +73,10 @@ use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
 use ironrdp_pdu::{PduResult, decode_cursor, decode_err, pdu_other_err};
 use tracing::{debug, trace, warn};
 
+mod held;
+
+pub use self::held::DecodeTimeouts;
+use self::held::{DecoderKey, Held, HeldPicture, HeldQueue};
 use crate::CHANNEL_NAME;
 use crate::avc444::{Avc444Layout, Yuv444Frame};
 use crate::cache::{
@@ -80,7 +84,7 @@ use crate::cache::{
     SMALL_CACHE_BYTES, SMALL_CACHE_SLOTS,
 };
 use crate::compositor::{Compositor, OutputUpdate};
-use crate::decode::{DecoderFactory, H264Decoder};
+use crate::decode::{DecodeStatus, DecodedPicture, DecoderError, DecoderFactory, H264Decoder};
 use crate::pdu::{
     Avc420BitmapStream, Avc444BitmapStream, CacheImportOfferPdu, CacheImportReplyPdu, CacheToSurfacePdu,
     CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags,
@@ -500,6 +504,12 @@ pub struct GraphicsPipelineClient {
     cache_import_attempted: bool,
     /// Keys of the last `CacheImportOffer`, in offer order, until its reply arrives.
     offered_cache_keys: Option<Vec<u64>>,
+
+    /// Commands held back, in arrival order, behind an H.264 picture that is still decoding.
+    held: HeldQueue,
+    /// A held command is being applied, so an AVC420 picture it submits is held ahead of the others.
+    releasing: bool,
+    decode_timeouts: DecodeTimeouts,
 }
 
 impl GraphicsPipelineClient {
@@ -537,6 +547,9 @@ impl GraphicsPipelineClient {
             persistent_cache: None,
             cache_import_attempted: false,
             offered_cache_keys: None,
+            held: HeldQueue::default(),
+            releasing: false,
+            decode_timeouts: DecodeTimeouts::default(),
         }
     }
 
@@ -641,6 +654,8 @@ impl GraphicsPipelineClient {
     /// Forgets everything a new capability exchange starts over: surfaces, caches, codec
     /// contexts and the frame count.
     fn restart_channel_state(&mut self) {
+        // Pending pictures are discarded with the decoders reset below.
+        self.held.clear();
         self.surfaces.clear();
         // The compositor reset below drops their budget charge with everything else.
         self.avc444_frames.clear();
@@ -713,6 +728,189 @@ impl GraphicsPipelineClient {
         self.pending_output_reset.take()
     }
 
+    /// Whether H.264 pictures submitted to an asynchronous decoder are still pending.
+    ///
+    /// While they are, the commands that follow them are held back, and so are the
+    /// acknowledgements of their frames, and [`Self::poll_decoded`] should run regularly.
+    #[must_use]
+    pub fn has_pending_decodes(&self) -> bool {
+        self.held.has_pending()
+    }
+
+    /// Paints the H.264 pictures an asynchronous decoder ([`H264Decoder::submit`]) returned, in
+    /// order, and applies the commands held back behind them.
+    ///
+    /// `now` is a reading of the caller's monotonic clock: the oldest picture, still pending
+    /// [`DecodeTimeouts::flush_after`] after the first call that found it pending at the head of the
+    /// queue, gets its decoder flushed, and still pending [`DecodeTimeouts::give_up_after`] after it,
+    /// is dropped, its frame acknowledged, and its decoder reset.
+    /// Returns the messages to send on the channel, such as the acknowledgements of the frames
+    /// this completed.
+    /// Call it whenever the decoder may have returned a picture, and regularly while
+    /// [`Self::has_pending_decodes`]; processing channel data paints returned pictures too.
+    pub fn poll_decoded(&mut self, now: MonotonicInstant) -> PduResult<Vec<DvcMessage>> {
+        self.release_held(Some(now))
+    }
+
+    /// Waits for asynchronous H.264 decoding as `timeouts` sets, instead of [`DecodeTimeouts::default`].
+    #[must_use]
+    pub fn with_decode_timeouts(mut self, timeouts: DecodeTimeouts) -> Self {
+        self.decode_timeouts = timeouts;
+        self
+    }
+
+    /// Holds `pdu` back behind the pictures still decoding.
+    ///
+    /// An AVC420 picture goes to its decoder right away, so the decoder works ahead, unless a held
+    /// command ends its stream first.
+    /// Every command a picture's submission depends on, such as the surface it paints, ends a
+    /// stream, so a picture submitted here sees the state the server meant.
+    fn hold(&mut self, pdu: GfxPdu) -> PduResult<()> {
+        match pdu {
+            GfxPdu::WireToSurface1(wire) if wire.codec_id == Codec1Type::Avc420 && !self.held.ends_stream_ahead() => {
+                self.handle_wire_to_surface1(wire)?;
+            }
+            pdu => self.held.push_command(pdu),
+        }
+        self.enforce_held_budget();
+        Ok(())
+    }
+
+    /// Gives up every pending picture when the held commands retain more than their budget, so the
+    /// queue drains at the next poll.
+    fn enforce_held_budget(&mut self) {
+        if self.held.over_budget() && self.held.has_pending() {
+            warn!("Graphics commands held behind H.264 decoding exceed their budget; giving up the pending pictures");
+            let decoders = self
+                .held
+                .commands
+                .iter()
+                .filter_map(|command| match command {
+                    Held::Avc420(picture) if picture.frame.is_none() => Some(picture.decoder),
+                    _ => None,
+                })
+                .collect();
+            self.give_up(
+                &decoders,
+                "graphics commands held behind H.264 decoding exceed their budget",
+            );
+        }
+    }
+
+    /// Ends the pending pictures of `decoders` with an error and resets those decoders, which
+    /// discards whatever they still hold.
+    fn give_up(&mut self, decoders: &BTreeSet<DecoderKey>, reason: &str) {
+        self.held.resolve_pending(decoders, reason);
+        for &key in decoders {
+            if let Some(decoder) = self.held_picture_decoder(key) {
+                decoder.reset();
+            }
+        }
+    }
+
+    /// The decoder a held picture was submitted to.
+    fn held_picture_decoder(&mut self, key: DecoderKey) -> Option<&mut Box<dyn H264Decoder>> {
+        match key {
+            DecoderKey::Shared => self.h264_decoder.as_mut(),
+            DecoderKey::Surface(surface_id) => self.surface_h264_decoders.get_mut(&surface_id)?.as_mut(),
+        }
+    }
+
+    /// Paints the held pictures returned so far, in order, and applies the commands held behind them.
+    ///
+    /// With `now`, a late picture's decoder is flushed, and a picture later still is given up.
+    fn release_held(&mut self, now: Option<MonotonicInstant>) -> PduResult<Vec<DvcMessage>> {
+        let mut responses = Vec::new();
+        let (shared, surfaces) = (&mut self.h264_decoder, &mut self.surface_h264_decoders);
+        self.held.collect(|key| {
+            let decoder = match key {
+                DecoderKey::Shared => shared.as_mut(),
+                DecoderKey::Surface(surface_id) => surfaces.get_mut(&surface_id).and_then(Option::as_mut),
+            };
+            match decoder {
+                Some(decoder) => decoder.poll_decoded(),
+                None => Some(Err(DecoderError::msg("the decoder of a pending picture is gone"))),
+            }
+        });
+        self.enforce_held_budget();
+        loop {
+            let picture = match self.held.commands.front_mut() {
+                None => break,
+                Some(Held::Pdu(_)) => {
+                    let Some(Held::Pdu(pdu)) = self.held.pop_front() else {
+                        break;
+                    };
+                    // An AVC420 picture this submits goes to the front, ahead of the commands after it.
+                    self.releasing = true;
+                    let applied = self.apply_pdu(pdu);
+                    self.releasing = false;
+                    responses.extend(applied?);
+                    continue;
+                }
+                Some(Held::Avc420(picture)) => picture,
+            };
+            if picture.frame.is_none() {
+                let (key, waiting_since, flushed) = (picture.decoder, picture.waiting_since, picture.flushed);
+                let decoder = self.held_picture_decoder(key);
+                let returned = match decoder {
+                    Some(decoder) => decoder.poll_decoded(),
+                    None => Some(Err(DecoderError::msg("the decoder of a pending picture is gone"))),
+                };
+                match returned {
+                    Some(frame) => self.held.resolve_front(frame),
+                    None => {
+                        let Some(now) = now else {
+                            break;
+                        };
+                        let since = waiting_since.unwrap_or(now);
+                        let waited = now.duration_since(since);
+                        if let Some(Held::Avc420(picture)) = self.held.commands.front_mut() {
+                            picture.waiting_since = Some(since);
+                            picture.flushed |= self.decode_timeouts.flush_after <= waited;
+                        }
+                        if self.decode_timeouts.give_up_after <= waited {
+                            warn!(
+                                ?waited,
+                                "An H.264 picture is overdue; dropping it and resetting its decoder"
+                            );
+                            self.give_up(
+                                &BTreeSet::from([key]),
+                                "the H.264 decoder did not return the picture in time",
+                            );
+                            continue;
+                        }
+                        if !flushed && self.decode_timeouts.flush_after <= waited {
+                            if let Some(decoder) = self.held_picture_decoder(key) {
+                                decoder.flush();
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+            let Some(Held::Avc420(picture)) = self.held.pop_front() else {
+                break;
+            };
+            let result = picture
+                .frame
+                .unwrap_or_else(|| Err(DecoderError::msg("no picture")))
+                .map_err(|e| pdu_other_err!("H.264 decode", source: e))
+                .and_then(|frame| {
+                    self.paint_avc420(
+                        picture.surface_id,
+                        &picture.destination_rectangle,
+                        &picture.region_rectangles,
+                        &frame,
+                    )
+                });
+            if let Err(error) = result {
+                self.drop_update(Codec1Type::Avc420, picture.surface_id, 0, &error);
+            }
+        }
+        Ok(responses)
+    }
+
     // ========================================================================
     // PDU Handlers
     // ========================================================================
@@ -738,7 +936,11 @@ impl GraphicsPipelineClient {
         for pdu in pdus {
             let pdu_responses = self.handle_pdu(pdu)?;
             responses.extend(pdu_responses);
+            if !self.held.is_empty() && !self.held.has_pending() {
+                responses.extend(self.release_held(None)?);
+            }
         }
+        responses.extend(self.release_held(None)?);
 
         Ok(responses)
     }
@@ -748,6 +950,14 @@ impl GraphicsPipelineClient {
         if self.state == ClientState::Resetting && !matches!(pdu, GfxPdu::CapabilitiesConfirm(_)) {
             return Ok(Vec::new());
         }
+        if !self.held.is_empty() {
+            self.hold(pdu)?;
+            return Ok(Vec::new());
+        }
+        self.apply_pdu(pdu)
+    }
+
+    fn apply_pdu(&mut self, pdu: GfxPdu) -> PduResult<Vec<DvcMessage>> {
         match pdu {
             GfxPdu::CapabilitiesConfirm(confirm) => {
                 self.handle_capabilities_confirm(confirm.0)?;
@@ -1337,6 +1547,8 @@ impl GraphicsPipelineClient {
     fn decode_avc420(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc420BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
+        // While releasing held commands, this picture is the oldest; otherwise it comes after them.
+        let held_ahead = !self.releasing && !self.held.is_empty();
 
         let Some(decoder) = self.surface_h264_decoder(surface_id)? else {
             debug!("No H.264 decoder configured, skipping AVC420 frame");
@@ -1345,13 +1557,41 @@ impl GraphicsPipelineClient {
 
         // A decoder returning YUV planes is converted with the transform MS-RDPEGFX
         // specifies, whatever matrix it would convert with itself.
-        let frame = if decoder.supports_yuv420() {
-            decoder.decode_yuv420(stream.data).map(|picture| picture.to_rgba())
+        let status = if decoder.supports_yuv420() {
+            decoder
+                .decode_yuv420(stream.data)
+                .map(|picture| DecodeStatus::Ready(picture.into()))
         } else {
-            decoder.decode(stream.data)
+            decoder.submit(stream.data)
         }
         .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
 
+        let frame = match status {
+            DecodeStatus::Ready(frame) if !held_ahead => {
+                return self.paint_avc420(surface_id, dest_rect, &stream.rectangles, &frame);
+            }
+            DecodeStatus::Ready(frame) => Some(Ok(frame)),
+            DecodeStatus::Pending => None,
+        };
+        let key = if self.surface_h264_decoders.contains_key(&surface_id) {
+            DecoderKey::Surface(surface_id)
+        } else {
+            DecoderKey::Shared
+        };
+        let picture = HeldPicture::new(surface_id, key, dest_rect.clone(), stream.rectangles, frame);
+        self.held.push_picture(picture, self.releasing);
+        self.enforce_held_budget();
+        Ok(())
+    }
+
+    /// Paints a decoded AVC420 picture within its region rectangles.
+    fn paint_avc420(
+        &mut self,
+        surface_id: u16,
+        dest_rect: &ExclusiveRectangle,
+        region_rectangles: &[ExclusiveRectangle],
+        frame: &DecodedPicture,
+    ) -> PduResult<()> {
         // MS-RDPEGFX 2.2.1.4.1: RDPGFX_RECT16 right/bottom are exclusive (one-past-end),
         // so dimensions are right-left / bottom-top despite the parsed type's name.
         let dest_width = dest_rect.right - dest_rect.left;
@@ -1363,7 +1603,7 @@ impl GraphicsPipelineClient {
         if frame.width() < u32::from(dest_width) || frame.height() < u32::from(dest_height) {
             return Err(pdu_other_err!(
                 "decoded frame smaller than destination rectangle",
-                source: crate::decode::DecoderError::msg(format!(
+                source: DecoderError::msg(format!(
                     "frame_width={}, frame_height={}, dest_width={dest_width}, dest_height={dest_height}",
                     frame.width(),
                     frame.height(),
@@ -1410,16 +1650,26 @@ impl GraphicsPipelineClient {
             handler.on_bitmap_updated(&update);
         };
 
-        if stream.rectangles.is_empty() {
+        if region_rectangles.is_empty() {
             // No region metadata: fall back to the single bounding-box update,
             // copying from the frame origin. This matches the pre-#2042 behavior
             // for streams that legitimately omit regionRects.
-            let cropped_data = crop_decoded_frame(frame.data(), frame.width(), frame.height(), dest_width, dest_height);
+            let cropped_data = match frame {
+                DecodedPicture::Rgba(frame) => {
+                    crop_decoded_frame(frame.data(), frame.width(), frame.height(), dest_width, dest_height)
+                }
+                DecodedPicture::Yuv420(picture) => picture.region_to_rgba(&ExclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: dest_width,
+                    bottom: dest_height,
+                }),
+            };
             emit_avc420(dest_rect.clone(), cropped_data);
             return Ok(());
         }
 
-        for region in &stream.rectangles {
+        for region in region_rectangles {
             // Clip the region to the surface and the decoded frame so a
             // malformed or over-large rect cannot read out of bounds or paint
             // outside the surface.
@@ -1458,7 +1708,10 @@ impl GraphicsPipelineClient {
 
             // Copy pixels (x, y) -> (x, y): the source in the decoded frame is the
             // region's own top-left, not the frame origin.
-            let data = copy_frame_region(frame.data(), frame.width(), &clipped);
+            let data = match frame {
+                DecodedPicture::Rgba(frame) => copy_frame_region(frame.data(), frame.width(), &clipped),
+                DecodedPicture::Yuv420(picture) => picture.region_to_rgba(&clipped),
+            };
             emit_avc420(clipped, data);
         }
         Ok(())

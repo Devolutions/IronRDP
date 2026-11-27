@@ -73,6 +73,11 @@ fn check_egfx_avc420_decode() {
 }
 
 #[test]
+fn check_egfx_annex_b() {
+    check!(egfx_annex_b);
+}
+
+#[test]
 fn check_egfx_multi_frame() {
     check!(egfx_multi_frame);
 }

@@ -607,6 +607,23 @@ pub fn egfx_avc420_decode(data: &[u8]) {
     }
 }
 
+/// Reads arbitrary bytes as H.264 Annex B access units and NAL units, as the web client's
+/// WebCodecs backend does with server data before configuring a decoder.
+pub fn egfx_annex_b(data: &[u8]) {
+    use ironrdp_egfx::annex_b::{AccessUnit, NalUnits, ParameterSets, SequenceParameterSet};
+
+    for unit in NalUnits::new(data) {
+        let _ = SequenceParameterSet::parse(unit);
+    }
+    let _ = SequenceParameterSet::parse(data);
+    let mut sets = ParameterSets::default();
+    sets.update(&AccessUnit::parse(data));
+    if let Some(key) = sets.key_access_unit(data) {
+        assert!(0 < key.sps.width && 0 < key.sps.height);
+        assert!(data.len() <= key.data.len());
+    }
+}
+
 /// Multi-frame oracle for the EGFX graphics pipeline client.
 ///
 /// H.264 decoding maintains reference-picture state, SPS/PPS context, and
