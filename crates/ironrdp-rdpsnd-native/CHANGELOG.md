@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.8.0...ironrdp-rdpsnd-native-v0.9.0)] - 2026-11-27
+
+### <!-- 1 -->Features
+
+- Add native microphone capture ([#2481](https://github.com/Devolutions/IronRDP/issues/2481)) ([8232d12c55](https://github.com/Devolutions/IronRDP/commit/8232d12c55fc2d2db5786ea22f7e746ca24c0575)) 
+
+  Capture microphone audio through the RDPEAI dynamic channel and queue
+  outgoing packets with ordered control replies.
+  
+  Expose polling and shutdown through the native audio session, and stop
+  capture if the bounded uplink overflows.
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.7.0...ironrdp-rdpsnd-native-v0.8.0)] - 2026-10-27
 
 ### <!-- 1 -->Features

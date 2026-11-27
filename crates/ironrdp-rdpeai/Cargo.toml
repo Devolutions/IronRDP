@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpeai"
-version = "0.2.0"
+version = "0.3.0"
 readme = "README.md"
 description = "AUDIO_INPUT dynamic channel for audio capture as described in MS-RDPEAI"
 edition.workspace = true
