@@ -2,7 +2,7 @@
 name = "ironrdp-session"
 version = "0.13.0"
 readme = "README.md"
-description = "State machines to drive an RDP session"
+description = "State machines to drive an RDP client session"
 edition.workspace = true
 rust-version = "1.94"
 license.workspace = true
