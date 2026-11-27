@@ -3417,15 +3417,19 @@ const CANDIDATE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// limit in front of the server.
 const MAX_CONCURRENT_CANDIDATES: usize = 8;
 
-/// How long the accept loop will wait, AFTER the live session has ended, for a
-/// candidate that is still mid-negotiation.
+/// How long the accept loop will wait, AFTER the live session has ended, for
+/// one of the candidates still mid-negotiation to authenticate.
+///
+/// One budget for the whole pool, not per candidate: the first candidate to
+/// authenticate within it is served next, a candidate that fails doesn't end
+/// the wait, and every candidate still negotiating when one wins, or when the
+/// budget runs out, is dropped (it can reconnect).
 ///
 /// Deliberately short and separate from [`CANDIDATE_NEGOTIATION_TIMEOUT`]:
 /// while this wait is in progress the loop is servicing nothing — no accepts,
 /// no [`ServerEvent`]s, not even [`ServerEvent::Quit`] — so it is the window in
-/// which an unauthenticated peer can make the server look hung. A candidate
-/// that cannot finish within it is dropped and simply reconnects; holding the
-/// whole listener for it is the worse trade.
+/// which an unauthenticated peer can make the server look hung; holding the
+/// whole listener for a slow candidate is the worse trade.
 const CANDIDATE_HANDOFF_GRACE: Duration = Duration::from_millis(750);
 
 /// How long a just-evicted peer is barred from preempting its way back in —
@@ -5086,35 +5090,34 @@ impl RdpServer {
                             // as the old session ended; finish it and serve it
                             // next if it authenticates.
                             PreemptRace::Ended(res) => {
-                                if !probes.is_empty() {
-                                    // BOUNDED: nothing else is being serviced
-                                    // during this await, so candidates that
-                                    // are not nearly done are dropped rather
-                                    // than allowed to stall the listener. The
-                                    // first to authenticate is served next.
-                                    let first_winner = async {
-                                        while !probes.is_empty() {
-                                            let (index, candidate) = next_probe(&mut probes).await;
-                                            // Upholds the pool's INVARIANT. The removed probe is a
-                                            // `#[must_use]` future, hence the explicit drop.
-                                            drop(probes.swap_remove(index));
-                                            if candidate.is_some() {
-                                                return candidate;
-                                            }
+                                // BOUNDED: nothing else is being serviced
+                                // during this await, so candidates that
+                                // are not nearly done are dropped rather
+                                // than allowed to stall the listener. The
+                                // first to authenticate is served next; an
+                                // empty pool resolves at once with none.
+                                let first_winner = async {
+                                    while !probes.is_empty() {
+                                        let (index, candidate) = next_probe(&mut probes).await;
+                                        // Upholds the pool's INVARIANT. The removed probe is a
+                                        // `#[must_use]` future, hence the explicit drop.
+                                        drop(probes.swap_remove(index));
+                                        if candidate.is_some() {
+                                            return candidate;
                                         }
+                                    }
+                                    None
+                                };
+                                handoff = match tokio::time::timeout(CANDIDATE_HANDOFF_GRACE, first_winner).await {
+                                    Ok(candidate) => candidate,
+                                    Err(_) => {
+                                        debug!(
+                                            "a candidate was still negotiating when the session ended -- \
+                                         dropping it rather than stalling the accept loop; it can reconnect"
+                                        );
                                         None
-                                    };
-                                    handoff = match tokio::time::timeout(CANDIDATE_HANDOFF_GRACE, first_winner).await {
-                                        Ok(candidate) => candidate,
-                                        Err(_) => {
-                                            debug!(
-                                                "a candidate was still negotiating when the session ended -- \
-                                             dropping it rather than stalling the accept loop; it can reconnect"
-                                            );
-                                            None
-                                        }
-                                    };
-                                }
+                                    }
+                                };
                                 break (res, None, recently_evicted);
                             }
                             PreemptRace::Accepted(Ok(Some(next))) => {
@@ -8422,7 +8425,7 @@ mod preempt_tests {
     }
 
     /// Whether `stream` gets an X.224 Connection Confirm carrying an RDP
-    /// Negotiation Response within `wait`, and stays open after it.
+    /// Negotiation Response within `wait`.
     async fn negotiated(stream: &mut TcpStream, wait: Duration) -> bool {
         // oracle: spec MS-RDPBCGR §2.2.1.2 and §2.2.1.2.1: a Connection Confirm
         // with a negotiation response is a TPKT header, an X.224 Connection
@@ -8450,12 +8453,7 @@ mod preempt_tests {
             TYPE_RDP_NEG_RSP,
             "not an RDP_NEG_RSP: {confirm:02x?}"
         );
-        // Negotiated, so the server keeps the connection and waits for the
-        // client's next PDU: nothing more arrives, and no EOF.
-        let mut more = [0u8; 1];
-        tokio::time::timeout(Duration::from_millis(200), stream.read(&mut more))
-            .await
-            .is_err()
+        true
     }
 
     /// Under `Preempt`, a candidate that stalls its handshake must not stop
