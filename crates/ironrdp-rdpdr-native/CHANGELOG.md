@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.9.0...ironrdp-rdpdr-native-v0.9.1)] - 2026-11-28
+
+### <!-- 4 -->Bug Fixes
+
+- Announce drive names as 8-bit characters ([#2342](https://github.com/Devolutions/IronRDP/issues/2342)) ([4cd9d45060](https://github.com/Devolutions/IronRDP/commit/4cd9d45060df01c731f5d814537ecd86d425190d)) 
+
+  Windows shows a redirected drive under the first letter of its name: on
+  Windows 11 (build 26300), a drive named `trd rw` is `\\tsclient\t`, and
+  `\\tsclient\trd rw` is not found; Windows Server 2022 and 2025 do the
+  same. The client announces the drive's full name in DeviceData as a
+  null-terminated UTF-16 string, as MS-RDPEFS 2.2.3.1 asks with
+  DRIVE_CAPABILITY_VERSION_02, but Windows reads the field as 8-bit
+  characters, so the zero byte after the first letter ends the name.
+  
+  The name now goes as 8-bit characters, null-terminated. FreeRDP's client
+  writes it this way too, also with DRIVE_CAPABILITY_VERSION_02, and so
+  does rdesktop's. Characters outside ASCII become `_`, and so do a NUL,
+  which would end the name early, and the characters MS-RDPEFS 2.2.1.3
+  forbids in PreferredDosName (`<`, `>`, `"`, `/`, `\`, `|`, and a colon
+  before the end), for which Windows refuses an 8-bit name; FreeRDP
+  replaces those too. A trailing colon stays: a drive announced as `C:` is
+  `\\tsclient\C`. Names that differ only outside ASCII are announced
+  alike. A server that decodes the field as UTF-16, as the specification
+  says, would misread the name; xrdp names drives from PreferredDosName,
+  which is unchanged.
+
+- Never create a missing drive root ([#2537](https://github.com/Devolutions/IronRDP/issues/2537)) ([814816c0dd](https://github.com/Devolutions/IronRDP/commit/814816c0dd61f7dd3a1833240368ffcd057b1acb)) 
+
+  The Windows backend opened the configured drive root with the server's
+  create disposition, and accepted FILE_OPEN_IF for it without treating it
+  as a mutation. When the configured root did not exist, a server could
+  create it, even on a read-only drive.
+  
+  The root is now always opened with FILE_OPEN, on read-only and
+  read-write drives alike: creating it would add an entry to its parent
+  directory, which lies outside the redirected drive. Existing roots still
+  open as before; a missing root fails to open instead of being created.
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.8.0...ironrdp-rdpdr-native-v0.9.0)] - 2026-10-27
 
 ### <!-- 4 -->Bug Fixes
